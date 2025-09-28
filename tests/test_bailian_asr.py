@@ -1,8 +1,5 @@
 from __future__ import annotations
-
-import base64
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,30 +16,53 @@ def test_transcribe_posts_audio_with_language(audio_file: Path, monkeypatch: pyt
 
     monkeypatch.setenv("BAILIAN_API_KEY", "secret")
 
-    mock_response = MagicMock()
-    mock_response.json.return_value = {"output": {"text": "hello world"}}
-    mock_response.raise_for_status.return_value = None
+    captured_call = {}
 
-    captured_payload = {}
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.output = {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"text": "hello world"},
+                            ],
+                        }
+                    }
+                ]
+            }
 
-    def fake_post(url: str, headers: dict, json: dict, timeout: int) -> MagicMock:  # type: ignore[override]
-        captured_payload["url"] = url
-        captured_payload["headers"] = headers
-        captured_payload["json"] = json
-        captured_payload["timeout"] = timeout
-        return mock_response
+    def fake_call(*, model: str, messages: list, api_key: str, result_format: str, asr_options: dict, **kwargs) -> FakeResponse:  # type: ignore[override]
+        captured_call["model"] = model
+        captured_call["messages"] = messages
+        captured_call["api_key"] = api_key
+        captured_call["result_format"] = result_format
+        captured_call["asr_options"] = asr_options
+        captured_call["kwargs"] = kwargs
+        return FakeResponse()
 
-    monkeypatch.setattr("video_asr_summary.asr_client.requests.post", fake_post)
+    monkeypatch.setattr(
+        "video_asr_summary.asr_client.MultiModalConversation.call",
+        staticmethod(fake_call),
+    )
 
     client = BailianASRClient()
     transcript = client.transcribe(audio_file, language="zh-CN")
 
     assert transcript == "hello world"
-    assert "Authorization" in captured_payload["headers"]
-    assert captured_payload["headers"]["Authorization"] == "Bearer secret"
-    assert captured_payload["json"]["parameters"]["language"] == "zh-CN"
-    encoded_audio = captured_payload["json"]["input"]["audio"]["content"]
-    assert base64.b64decode(encoded_audio) == b"fake-audio"
+    assert captured_call["model"] == "qwen3-asr-flash"
+    assert captured_call["api_key"] == "secret"
+    assert captured_call["result_format"] == "message"
+    assert captured_call["asr_options"]["language"] == "zh-CN"
+
+    messages = captured_call["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == [{"text": ""}]
+
+    audio_message = messages[1]
+    assert audio_message["role"] == "user"
+    assert audio_message["content"] == [{"audio": str(audio_file)}]
 
 
 def test_transcribe_raises_on_error(audio_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,10 +70,13 @@ def test_transcribe_raises_on_error(audio_file: Path, monkeypatch: pytest.Monkey
 
     monkeypatch.setenv("BAILIAN_API_KEY", "secret")
 
-    def fake_post(*args, **kwargs):  # type: ignore[override]
+    def fake_call(*args, **kwargs):  # type: ignore[override]
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("video_asr_summary.asr_client.requests.post", fake_post)
+    monkeypatch.setattr(
+        "video_asr_summary.asr_client.MultiModalConversation.call",
+        staticmethod(fake_call),
+    )
 
     client = BailianASRClient()
     with pytest.raises(RuntimeError):
