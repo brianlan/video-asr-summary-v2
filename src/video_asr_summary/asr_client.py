@@ -36,7 +36,7 @@ class BailianASRClient:
         self,
         audio_path: Path | str,
         *,
-        language: str = "en-US",
+        language: str = "en",
         context: str | None = None,
     ) -> str:
         path = Path(audio_path).resolve()

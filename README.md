@@ -31,5 +31,6 @@ Pipeline for extracting audio from video, transcribing it with Alibaba Bailian A
 ## Notes
 
 - External API calls are isolated inside `BailianASRClient` and `ChataiSummarizer`; both accept custom endpoints and credentials for testing or overrides.
+- `process_video` compresses extracted audio to MP3 (configurable) before upload so large source videos stay within Bailian's size limits.
 - `BailianASRClient` now routes through DashScope's `MultiModalConversation` API, uploading local audio files automatically and supporting optional per-call language overrides.
 - `process_video` accepts optional injected client instances and supports automatic cleanup of the intermediate audio file via the `cleanup` flag.

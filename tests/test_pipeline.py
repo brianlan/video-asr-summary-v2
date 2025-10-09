@@ -29,7 +29,12 @@ def test_pipeline_runs_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     )
 
     assert result == {"transcript": "transcribed text", "summary": {"summary": "short"}}
-    mock_extract.assert_called_once_with(tmp_path / "input.mp4")
+    mock_extract.assert_called_once_with(
+        tmp_path / "input.mp4",
+        sample_rate=16000,
+        audio_format="mp3",
+        audio_bitrate="64k",
+    )
     fake_asr.transcribe.assert_called_once_with(audio_path, language="es-ES")
     fake_summarizer.summarize.assert_called_once()
 
@@ -37,7 +42,10 @@ def test_pipeline_runs_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_pipeline_uses_default_clients(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from video_asr_summary import pipeline
 
-    monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", lambda path: tmp_path / "audio.wav")
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.extract_audio",
+        lambda *args, **kwargs: tmp_path / "audio.wav",
+    )
 
     created_clients: Dict[str, object] = {}
 

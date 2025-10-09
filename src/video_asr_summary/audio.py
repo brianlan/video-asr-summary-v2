@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+
+
 def extract_audio(
     input_video: Path | str,
     output_path: Path | str | None = None,
     *,
     sample_rate: int = 16000,
+    audio_format: str = "wav",
+    audio_bitrate: str | None = None,
 ) -> Path:
     """Extract a mono WAV track from ``input_video``.
 
@@ -21,8 +25,10 @@ def extract_audio(
     """
 
     input_path = Path(input_video)
+    normalized_format = audio_format.lower()
+
     if output_path is None:
-        target = input_path.with_suffix(".wav")
+        target = input_path.with_suffix(f".{normalized_format}")
     else:
         target = Path(output_path)
 
@@ -32,14 +38,26 @@ def extract_audio(
         "-i",
         str(input_path),
         "-vn",
-        "-acodec",
-        "pcm_s16le",
         "-ac",
         "1",
         "-ar",
         str(sample_rate),
-        str(target),
     ]
+
+    if normalized_format == "wav":
+        command.extend(["-acodec", "pcm_s16le"])
+    elif normalized_format in {"mp3", "mpeg"}:
+        command.extend(["-acodec", "libmp3lame"])
+        if audio_bitrate:
+            command.extend(["-b:a", audio_bitrate])
+    elif normalized_format in {"flac"}:
+        command.extend(["-acodec", "flac"])
+    else:
+        command.extend(["-acodec", normalized_format])
+        if audio_bitrate:
+            command.extend(["-b:a", audio_bitrate])
+
+    command.append(str(target))
 
     try:
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
