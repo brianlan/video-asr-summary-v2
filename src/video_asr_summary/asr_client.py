@@ -70,6 +70,13 @@ class BailianASRClient:
         except Exception as exc:  # pragma: no cover - raised via tests
             raise RuntimeError("Bailian ASR request failed") from exc
 
+        error_code = self._get_attr_or_key(response, "code")
+        if isinstance(error_code, str) and error_code.strip():
+            error_message = self._get_attr_or_key(response, "message") or ""
+            raise RuntimeError(
+                f"Bailian ASR error: {error_code}: {error_message}"
+            )
+
         transcript = self._extract_transcript(response)
         if transcript is None:
             raise RuntimeError("Unexpected Bailian ASR response payload")
@@ -78,7 +85,7 @@ class BailianASRClient:
 
     @staticmethod
     def _extract_transcript(response: Any) -> str | None:
-        output = getattr(response, "output", None)
+        output = BailianASRClient._get_attr_or_key(response, "output")
         if output is None:
             return None
 
