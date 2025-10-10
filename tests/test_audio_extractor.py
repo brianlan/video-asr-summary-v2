@@ -5,6 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pydub import AudioSegment
+from pydub.generators import Sine
 
 
 @pytest.fixture
@@ -57,3 +59,44 @@ def test_extract_audio_raises_when_ffmpeg_fails(sample_video: Path) -> None:
     with patch("video_asr_summary.audio.subprocess.run", side_effect=subprocess.CalledProcessError(1, "ffmpeg")):
         with pytest.raises(RuntimeError):
             extract_audio(sample_video)
+
+
+def test_split_audio_on_silence_returns_original_when_short(tmp_path: Path) -> None:
+    from video_asr_summary.audio import split_audio_on_silence
+
+    clip = Sine(440).to_audio_segment(duration=1500).apply_gain(-6)
+    audio_path = tmp_path / "short.wav"
+    clip.export(audio_path, format="wav")
+
+    segments = split_audio_on_silence(audio_path, max_duration=5.0)
+
+    assert segments == [audio_path]
+
+
+def test_split_audio_on_silence_aligns_segments_with_silence(tmp_path: Path) -> None:
+    from video_asr_summary.audio import split_audio_on_silence
+
+    speech = Sine(440).to_audio_segment(duration=2200).apply_gain(-6)
+    pause = AudioSegment.silent(duration=900)
+    composite = speech + pause + speech + pause + speech
+
+    source_path = tmp_path / "input.wav"
+    composite.export(source_path, format="wav")
+
+    segments = split_audio_on_silence(
+        source_path,
+        max_duration=3.0,
+        silence_threshold_db=-35,
+        min_silence_len_ms=600,
+        output_dir=tmp_path,
+    )
+
+    assert len(segments) == 3
+    durations = [len(AudioSegment.from_file(path)) for path in segments]
+    total_duration = sum(durations)
+
+    assert all(duration <= 3500 for duration in durations)
+    assert pytest.approx(total_duration, rel=0.05) == len(composite)
+
+    # Ensure we created new chunk files rather than overwriting the original
+    assert all(path != source_path for path in segments)

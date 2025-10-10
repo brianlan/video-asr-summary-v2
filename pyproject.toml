@@ -11,6 +11,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31",
+    "pydub>=0.25",
 ]
 
 [project.optional-dependencies]

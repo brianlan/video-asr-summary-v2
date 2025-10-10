@@ -14,6 +14,10 @@ def test_pipeline_runs_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     mock_extract = MagicMock(return_value=audio_path)
     monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", mock_extract)
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
 
     fake_asr = MagicMock()
     fake_asr.transcribe.return_value = "transcribed text"
@@ -46,6 +50,10 @@ def test_pipeline_uses_default_clients(monkeypatch: pytest.MonkeyPatch, tmp_path
         "video_asr_summary.pipeline.extract_audio",
         lambda *args, **kwargs: tmp_path / "audio.wav",
     )
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [tmp_path / "audio.wav"],
+    )
 
     created_clients: Dict[str, object] = {}
 
@@ -70,3 +78,39 @@ def test_pipeline_uses_default_clients(monkeypatch: pytest.MonkeyPatch, tmp_path
 
     assert created_clients == {"asr": True, "summarizer": True}
     assert result == {"transcript": "text", "summary": {"summary": "value"}}
+
+
+def test_pipeline_transcribes_multiple_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from video_asr_summary import pipeline
+
+    video_path = tmp_path / "video.mp4"
+    audio_path = tmp_path / "audio.mp3"
+    chunk_paths = [tmp_path / "chunk_0.mp3", tmp_path / "chunk_1.mp3"]
+    for path in chunk_paths:
+        path.write_bytes(b"chunk")
+
+    monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path)
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: chunk_paths,
+    )
+
+    fake_asr = MagicMock()
+    fake_asr.transcribe.side_effect = ["first", "second"]
+
+    fake_summarizer = MagicMock()
+    fake_summarizer.summarize.return_value = {"summary": "ok"}
+
+    result = pipeline.process_video(
+        video_path=video_path,
+        language="zh",
+        bailian_client=fake_asr,
+        summarizer=fake_summarizer,
+    )
+
+    assert fake_asr.transcribe.call_count == 2
+    fake_asr.transcribe.assert_any_call(chunk_paths[0], language="zh")
+    fake_asr.transcribe.assert_any_call(chunk_paths[1], language="zh")
+
+    assert result["transcript"] == "first\n\nsecond"
+    fake_summarizer.summarize.assert_called_once_with("first\n\nsecond", language="zh")

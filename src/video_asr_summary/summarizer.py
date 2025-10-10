@@ -17,7 +17,7 @@ class ChataiSummarizer:
         self,
         *,
         api_token: str | None = None,
-        base_url: str = "https://www.chataiapi.com/v1",
+        base_url: str = "https://api.chataiapi.com/v1",
         model: str = "gpt-4o-mini",
         timeout: int = 120,
     ) -> None:
