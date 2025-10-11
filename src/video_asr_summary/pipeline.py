@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Optional
 
-from .asr_client import BailianASRClient
+from .asr_client import BailianASRClient, LocalQwenASRClient
 from .audio import extract_audio, split_audio_on_silence
 from .summarizer import ChataiSummarizer
 
@@ -18,6 +18,10 @@ def process_video(
     audio_bitrate: str | None = "64k",
     max_segment_duration: float = 60.0,
     bailian_client: Optional[BailianASRClient] = None,
+    bailian_options: Optional[dict[str, Any]] = None,
+    asr_backend: str = "bailian",
+    local_client: Optional[LocalQwenASRClient] = None,
+    local_asr_options: Optional[dict[str, Any]] = None,
     summarizer: Optional[ChataiSummarizer] = None,
     cleanup: bool = False,
 ) -> dict[str, Any]:
@@ -31,7 +35,21 @@ def process_video(
         audio_bitrate=audio_bitrate,
     )
 
-    asr = bailian_client or BailianASRClient()
+    backend = asr_backend.lower()
+    if backend == "bailian":
+        if bailian_client is not None:
+            asr = bailian_client
+        else:
+            options = bailian_options or {}
+            asr = BailianASRClient(**options)
+    elif backend == "local":
+        if local_client is not None:
+            asr = local_client
+        else:
+            options = local_asr_options or {}
+            asr = LocalQwenASRClient(**options)
+    else:
+        raise ValueError(f"Unsupported ASR backend: {asr_backend}")
     transcripts: list[str] = []
 
     with TemporaryDirectory() as tmpdir:

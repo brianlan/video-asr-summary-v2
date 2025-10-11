@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -81,3 +82,64 @@ def test_transcribe_raises_on_error(audio_file: Path, monkeypatch: pytest.Monkey
     client = BailianASRClient()
     with pytest.raises(RuntimeError):
         client.transcribe(audio_file)
+
+
+def test_local_qwen_asr_transcribe_uses_injected_dependencies(tmp_path: Path) -> None:
+    from video_asr_summary.asr_client import LocalQwenASRClient
+
+    audio_path = tmp_path / "chunk.wav"
+    audio_path.write_bytes(b"fake")
+
+    captured: dict[str, object] = {}
+
+    class FakeProcessor:
+        def apply_chat_template(self, messages: list, *, tokenize: bool, add_generation_prompt: bool) -> str:
+            captured["messages"] = messages
+            captured["tokenize"] = tokenize
+            captured["add_generation_prompt"] = add_generation_prompt
+            return "prompt-text"
+
+    class FakeLLM:
+        def generate(self, prompts: list, *, sampling_params: object) -> list:
+            captured["prompts"] = prompts
+            captured["sampling_params"] = sampling_params
+
+            class GeneratedOutput:
+                def __init__(self, text: str) -> None:
+                    self.outputs = [MagicMock(text=text)]
+
+            return [GeneratedOutput("  final text  ")]
+
+    def fake_process_mm_info(messages: list, *, use_audio_in_video: bool) -> tuple[list[str], None, None]:
+        captured["mm_messages"] = messages
+        captured["use_audio_in_video"] = use_audio_in_video
+        return (["audio-bytes"], None, None)
+
+    client = LocalQwenASRClient(
+        model_path="dummy",
+        llm=FakeLLM(),
+        processor=FakeProcessor(),
+        sampling_params=object(),
+        process_mm_info=fake_process_mm_info,
+        prompt_template="Please output the ASR result of the above {media_type} in {language}.",
+    )
+
+    transcript = client.transcribe(audio_path, language="ja")
+
+    assert transcript == "final text"
+
+    messages = captured["messages"]
+    assert messages[0]["role"] == "user"
+    audio_content = messages[0]["content"][0]
+    assert audio_content["type"] == "audio"
+    assert audio_content["audio"] == str(audio_path.resolve())
+
+    prompt_content = messages[0]["content"][1]
+    assert prompt_content["text"].lower().startswith("please output")
+    assert "ja" in prompt_content["text"]
+
+    prompts = captured["prompts"]
+    assert prompts[0]["prompt"] == "prompt-text"
+    assert prompts[0]["multi_modal_data"]["audio"] == ["audio-bytes"]
+    assert captured["sampling_params"] is not None
+    assert captured["use_audio_in_video"] is True

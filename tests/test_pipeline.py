@@ -114,3 +114,56 @@ def test_pipeline_transcribes_multiple_chunks(tmp_path: Path, monkeypatch: pytes
 
     assert result["transcript"] == "first\n\nsecond"
     fake_summarizer.summarize.assert_called_once_with("first\n\nsecond", language="zh")
+
+
+def test_pipeline_uses_local_backend_when_requested(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from video_asr_summary import pipeline
+
+    audio_path = tmp_path / "audio.wav"
+    monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path)
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+
+    created: dict[str, object] = {}
+
+    class StubLocalClient:
+        def __init__(self, **kwargs) -> None:
+            created["kwargs"] = kwargs
+
+        def transcribe(self, path: Path, *, language: str) -> str:
+            created["transcribe"] = (path, language)
+            return "local transcript"
+
+    monkeypatch.setattr("video_asr_summary.pipeline.LocalQwenASRClient", StubLocalClient)
+
+    fake_summarizer = MagicMock()
+    fake_summarizer.summarize.return_value = {"summary": "done"}
+
+    result = pipeline.process_video(
+        video_path=tmp_path / "input.mp4",
+        language="fr",
+        asr_backend="local",
+        local_asr_options={"model_path": "/models/qwen"},
+        summarizer=fake_summarizer,
+    )
+
+    assert result == {"transcript": "local transcript", "summary": {"summary": "done"}}
+    assert created["kwargs"] == {"model_path": "/models/qwen"}
+    assert created["transcribe"] == (audio_path, "fr")
+    fake_summarizer.summarize.assert_called_once_with("local transcript", language="fr")
+
+
+def test_pipeline_raises_for_unknown_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from video_asr_summary import pipeline
+
+    audio_path = tmp_path / "audio.wav"
+    monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path)
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+
+    with pytest.raises(ValueError):
+        pipeline.process_video(tmp_path / "video.mp4", asr_backend="unknown")
