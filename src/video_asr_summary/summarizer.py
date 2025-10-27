@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import json
 import os
-import re
 from typing import Any
 
 import requests
-
-_JSON_BLOCK_PATTERN = re.compile(r"```json\s*(\{[\s\S]*?\})\s*```", re.IGNORECASE)
 
 
 class ChataiSummarizer:
@@ -18,7 +14,7 @@ class ChataiSummarizer:
         *,
         api_token: str | None = None,
         base_url: str = "https://api.chataiapi.com/v1",
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-4o-mini", # other available models: ["gpt-4o-mini"]
         timeout: int = 120,
     ) -> None:
         self.api_token = api_token or os.getenv("OPENAI_ACCESS_TOKEN")
@@ -36,13 +32,15 @@ class ChataiSummarizer:
         language: str | None = None,
         instructions: str | None = None,
         max_tokens: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> str:
         prompt_instructions = instructions or (
-            "You are a summarization assistant. Return a concise JSON object with keys "
-            "'summary' and 'highlights' (an array of strings)."
+            "You are a writing assistant. Reorganize the provided transcript into a clear, well-structured "
+            "markdown document. Remove filler words, rewrite informal phrases into formal prose, and group "
+            "related ideas under concise headings and bullet lists when appropriate. Do not return JSON; "
+            "respond using markdown only."
         )
         if language:
-            prompt_instructions += f" Respond in {language}."
+            prompt_instructions += f" Produce the markdown in {language}."
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -76,19 +74,7 @@ class ChataiSummarizer:
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("Unexpected summarization response payload") from exc
 
-        return _parse_json_content(content)
+        if not isinstance(content, str):
+            raise RuntimeError("Summarization response content is not text")
 
-
-def _parse_json_content(content: str) -> dict[str, Any]:
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        match = _JSON_BLOCK_PATTERN.search(content)
-        if not match:
-            raise RuntimeError("Summarization response is not valid JSON") from None
-        block = match.group(1).strip()
-        try:
-            return json.loads(block)
-        except json.JSONDecodeError:
-            block = block.encode("utf-8").decode("unicode_escape")
-            return json.loads(block)
+        return content

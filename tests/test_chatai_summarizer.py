@@ -9,7 +9,7 @@ def _setup_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_ACCESS_TOKEN", "token")
 
 
-def test_summarize_parses_plain_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_summarize_returns_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
     from video_asr_summary.summarizer import ChataiSummarizer
 
     _setup_env(monkeypatch)
@@ -19,7 +19,7 @@ def test_summarize_parses_plain_json(monkeypatch: pytest.MonkeyPatch) -> None:
         "choices": [
             {
                 "message": {
-                    "content": '{"summary": "short", "highlights": ["a", "b"]}'
+                    "content": "## Title\n\n- point A\n- point B"
                 }
             }
         ]
@@ -40,12 +40,13 @@ def test_summarize_parses_plain_json(monkeypatch: pytest.MonkeyPatch) -> None:
     summarizer = ChataiSummarizer()
     result = summarizer.summarize("text to summarize")
 
-    assert result == {"summary": "short", "highlights": ["a", "b"]}
+    assert result == "## Title\n\n- point A\n- point B"
     assert captured_payload["url"].endswith("/chat/completions")
     assert captured_payload["headers"]["Authorization"] == "Bearer token"
+    assert "Reorganize the provided transcript" in captured_payload["json"]["messages"][0]["content"]
 
 
-def test_summarize_parses_markdown_wrapped_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_summarize_raises_when_content_not_text(monkeypatch: pytest.MonkeyPatch) -> None:
     from video_asr_summary.summarizer import ChataiSummarizer
 
     _setup_env(monkeypatch)
@@ -55,7 +56,7 @@ def test_summarize_parses_markdown_wrapped_json(monkeypatch: pytest.MonkeyPatch)
         "choices": [
             {
                 "message": {
-                    "content": "```json\n{\\n  \"summary\": \"hello\"\n}\n```"
+                    "content": {"summary": "hello"}
                 }
             }
         ]
@@ -67,6 +68,5 @@ def test_summarize_parses_markdown_wrapped_json(monkeypatch: pytest.MonkeyPatch)
     )
 
     summarizer = ChataiSummarizer()
-    result = summarizer.summarize("another text")
-
-    assert result == {"summary": "hello"}
+    with pytest.raises(RuntimeError, match="content is not text"):
+        summarizer.summarize("another text")

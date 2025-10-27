@@ -1,12 +1,15 @@
 import argparse
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from urllib.parse import urlparse
 
+import yt_dlp
 from video_asr_summary import process_video
 
 
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Run the video ASR and summarization pipeline.")
-	parser.add_argument("video", type=Path, help="Path to the input video file")
+	parser.add_argument("video", help="Path to the input video file or a video URL")
 	parser.add_argument("--language", default="zh", help="Language code to pass to ASR and summarizer")
 	parser.add_argument("--audio-format", dest="audio_format", default="mp3", help="Audio format produced by ffmpeg")
 	parser.add_argument(
@@ -123,6 +126,23 @@ def parse_args() -> argparse.Namespace:
 	return parser.parse_args()
 
 
+def is_url(value: str) -> bool:
+	parsed = urlparse(value)
+	return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def download_video(video_url: str, output_dir: Path) -> Path:
+	options = {
+		"outtmpl": str(output_dir / "%(title).200s.%(ext)s"),
+		"quiet": True,
+		"no_warnings": True,
+	}
+	with yt_dlp.YoutubeDL(options) as downloader:
+		info = downloader.extract_info(video_url, download=True)
+		filepath = downloader.prepare_filename(info)
+	return Path(filepath)
+
+
 def main() -> None:
 	args = parse_args()
 
@@ -142,23 +162,38 @@ def main() -> None:
 	}
 	local_asr_options = {key: value for key, value in local_asr_options.items() if value is not None}
 
-	result = process_video(
-		video_path=args.video,
-		language=args.language,
-		audio_format=args.audio_format,
-		audio_sample_rate=args.audio_sample_rate,
-		audio_bitrate=args.audio_bitrate,
-		max_segment_duration=args.max_segment_duration,
-		asr_backend=args.asr_backend,
-		local_asr_options=local_asr_options,
-	)
+	video_input = args.video
+	if is_url(video_input):
+		with TemporaryDirectory() as tmpdir:
+			downloaded_video = download_video(video_input, Path(tmpdir))
+			result = process_video(
+				video_path=downloaded_video,
+				language=args.language,
+				audio_format=args.audio_format,
+				audio_sample_rate=args.audio_sample_rate,
+				audio_bitrate=args.audio_bitrate,
+				max_segment_duration=args.max_segment_duration,
+				asr_backend=args.asr_backend,
+				local_asr_options=local_asr_options,
+			)
+	else:
+		video_path = Path(video_input)
+		if not video_path.exists():
+			raise FileNotFoundError(f"Video file does not exist: {video_path}")
+		result = process_video(
+			video_path=video_path,
+			language=args.language,
+			audio_format=args.audio_format,
+			audio_sample_rate=args.audio_sample_rate,
+			audio_bitrate=args.audio_bitrate,
+			max_segment_duration=args.max_segment_duration,
+			asr_backend=args.asr_backend,
+			local_asr_options=local_asr_options,
+		)
 
 	if args.summary_only:
-		summary_text = result.get("summary", {}).get("summary")
-		if summary_text is None:
-			print(result)
-		else:
-			print(summary_text)
+		summary_text = result.get("summary")
+		print(summary_text if summary_text is not None else result)
 	else:
 		print(result)
 
