@@ -13,6 +13,7 @@ dependencies = [
     "requests>=2.31",
     "pydub>=0.25",
     "yt-dlp>=2024.4.9",
+    "lark-oapi>=1.4.23",
 ]
 
 [project.optional-dependencies]

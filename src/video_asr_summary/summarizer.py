@@ -35,9 +35,9 @@ class ChataiSummarizer:
     ) -> str:
         prompt_instructions = instructions or (
             "You are a writing assistant. Reorganize the provided transcript into a clear, well-structured "
-            "markdown document. Remove filler words, rewrite informal phrases into formal prose, and group "
-            "related ideas under concise headings and bullet lists when appropriate. Do not return JSON; "
-            "respond using markdown only."
+            "markdown document. Begin with a single H1 heading that serves as a concise title capturing the "
+            "overall theme, then rewrite the remaining content into organized sections and bullet lists. "
+            "Remove filler words, rewrite informal phrases into formal prose, and respond using markdown only."
         )
         if language:
             prompt_instructions += f" Produce the markdown in {language}."

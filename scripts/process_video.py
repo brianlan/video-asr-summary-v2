@@ -1,10 +1,16 @@
 import argparse
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import yt_dlp
 from video_asr_summary import process_video
+from video_asr_summary.lark_docs import (
+	LarkDocError,
+	create_summary_document,
+	derive_lark_title,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,6 +129,38 @@ def parse_args() -> argparse.Namespace:
 		action="store_true",
 		help="Print only the summary text instead of the full result payload",
 	)
+	parser.add_argument(
+		"--publish-to-lark",
+		dest="publish_to_lark",
+		action="store_true",
+		help="Create a Lark doc with the generated summary",
+	)
+	parser.add_argument(
+		"--lark-folder-token",
+		dest="lark_folder_token",
+		help="Optional Lark folder token where the document should be created",
+	)
+	parser.add_argument(
+		"--lark-app-id",
+		dest="lark_app_id",
+		help="Override the Lark app ID (defaults to LARK_APP_ID env var)",
+	)
+	parser.add_argument(
+		"--lark-app-secret",
+		dest="lark_app_secret",
+		help="Override the Lark app secret (defaults to LARK_APP_SECRET env var)",
+	)
+	parser.add_argument(
+		"--lark-tenant-token",
+		dest="lark_tenant_token",
+		help="Override the Lark tenant access token (defaults to LARK_TENANT_ACCESS_TOKEN env var)",
+	)
+	parser.add_argument(
+		"--lark-share-open-id",
+		dest="lark_share_open_ids",
+		action="append",
+		help="Open ID to grant read access to the created Lark document (repeatable)",
+	)
 	return parser.parse_args()
 
 
@@ -131,11 +169,25 @@ def is_url(value: str) -> bool:
 	return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def default_title_from_video(video_input: str) -> str:
+	if is_url(video_input):
+		parsed = urlparse(video_input)
+		name = Path(unquote(parsed.path)).stem or parsed.netloc
+	else:
+		name = Path(video_input).stem
+	return name or "Video Summary"
+
+
 def download_video(video_url: str, output_dir: Path) -> Path:
 	options = {
 		"outtmpl": str(output_dir / "%(title).200s.%(ext)s"),
 		"quiet": True,
 		"no_warnings": True,
+		"nocheckcertificate": True,
+		"retries": 5,
+		"http_headers": {
+			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+		},
 	}
 	with yt_dlp.YoutubeDL(options) as downloader:
 		info = downloader.extract_info(video_url, download=True)
@@ -191,8 +243,31 @@ def main() -> None:
 			local_asr_options=local_asr_options,
 		)
 
+	summary_text = result.get("summary")
+	lark_doc = None
+
+	if args.publish_to_lark:
+		if summary_text is None or not str(summary_text).strip():
+			raise RuntimeError("No summary content generated; cannot publish to Lark.")
+		doc_title = derive_lark_title(summary_text, default_title_from_video(video_input))
+		try:
+			lark_doc = create_summary_document(
+				summary_text,
+				title=doc_title,
+				folder_token=args.lark_folder_token,
+				app_id=args.lark_app_id,
+				app_secret=args.lark_app_secret,
+				tenant_access_token=args.lark_tenant_token,
+				share_open_ids=args.lark_share_open_ids,
+			)
+			result["lark_document"] = lark_doc
+			print(f"Lark document created: {lark_doc['url']}")
+			for entry in lark_doc.get("shared_with", []):
+				print(f"Granted view access to open_id: {entry['open_id']}")
+		except LarkDocError as exc:
+			raise RuntimeError(str(exc)) from exc
+
 	if args.summary_only:
-		summary_text = result.get("summary")
 		print(summary_text if summary_text is not None else result)
 	else:
 		print(result)

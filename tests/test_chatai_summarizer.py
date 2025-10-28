@@ -19,7 +19,7 @@ def test_summarize_returns_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
         "choices": [
             {
                 "message": {
-                    "content": "## Title\n\n- point A\n- point B"
+                    "content": "# Title\n\n## Section\n- point A\n- point B"
                 }
             }
         ]
@@ -40,10 +40,12 @@ def test_summarize_returns_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
     summarizer = ChataiSummarizer()
     result = summarizer.summarize("text to summarize")
 
-    assert result == "## Title\n\n- point A\n- point B"
+    assert result == "# Title\n\n## Section\n- point A\n- point B"
     assert captured_payload["url"].endswith("/chat/completions")
     assert captured_payload["headers"]["Authorization"] == "Bearer token"
-    assert "Reorganize the provided transcript" in captured_payload["json"]["messages"][0]["content"]
+    system_prompt = captured_payload["json"]["messages"][0]["content"]
+    assert "Reorganize the provided transcript" in system_prompt
+    assert "Begin with a single H1 heading" in system_prompt
 
 
 def test_summarize_raises_when_content_not_text(monkeypatch: pytest.MonkeyPatch) -> None:

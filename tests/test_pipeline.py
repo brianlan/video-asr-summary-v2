@@ -23,7 +23,7 @@ def test_pipeline_runs_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     fake_asr.transcribe.return_value = "transcribed text"
 
     fake_summarizer = MagicMock()
-    fake_summarizer.summarize.return_value = "## Summary\n\n- short"
+    fake_summarizer.summarize.return_value = "# Summary\n\n- short"
 
     result = pipeline.process_video(
         video_path=tmp_path / "input.mp4",
@@ -32,7 +32,7 @@ def test_pipeline_runs_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         summarizer=fake_summarizer,
     )
 
-    assert result == {"transcript": "transcribed text", "summary": "## Summary\n\n- short"}
+    assert result == {"transcript": "transcribed text", "summary": "# Summary\n\n- short"}
     mock_extract.assert_called_once_with(
         tmp_path / "input.mp4",
         sample_rate=16000,
@@ -69,7 +69,7 @@ def test_pipeline_uses_default_clients(monkeypatch: pytest.MonkeyPatch, tmp_path
             created_clients["summarizer"] = True
 
         def summarize(self, *_args, **_kwargs):
-            return "## Value"
+            return "# Value"
 
     monkeypatch.setattr("video_asr_summary.pipeline.BailianASRClient", StubASR)
     monkeypatch.setattr("video_asr_summary.pipeline.ChataiSummarizer", StubSummarizer)
@@ -77,7 +77,7 @@ def test_pipeline_uses_default_clients(monkeypatch: pytest.MonkeyPatch, tmp_path
     result = pipeline.process_video(video_path=tmp_path / "input.mp4")
 
     assert created_clients == {"asr": True, "summarizer": True}
-    assert result == {"transcript": "text", "summary": "## Value"}
+    assert result == {"transcript": "text", "summary": "# Value"}
 
 
 def test_pipeline_transcribes_multiple_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,7 +99,7 @@ def test_pipeline_transcribes_multiple_chunks(tmp_path: Path, monkeypatch: pytes
     fake_asr.transcribe.side_effect = ["first", "second"]
 
     fake_summarizer = MagicMock()
-    fake_summarizer.summarize.return_value = "## ok"
+    fake_summarizer.summarize.return_value = "# ok"
 
     result = pipeline.process_video(
         video_path=video_path,
@@ -139,7 +139,7 @@ def test_pipeline_uses_local_backend_when_requested(tmp_path: Path, monkeypatch:
     monkeypatch.setattr("video_asr_summary.pipeline.LocalQwenASRClient", StubLocalClient)
 
     fake_summarizer = MagicMock()
-    fake_summarizer.summarize.return_value = "## done"
+    fake_summarizer.summarize.return_value = "# done"
 
     result = pipeline.process_video(
         video_path=tmp_path / "input.mp4",
@@ -149,7 +149,7 @@ def test_pipeline_uses_local_backend_when_requested(tmp_path: Path, monkeypatch:
         summarizer=fake_summarizer,
     )
 
-    assert result == {"transcript": "local transcript", "summary": "## done"}
+    assert result == {"transcript": "local transcript", "summary": "# done"}
     assert created["kwargs"] == {"model_path": "/models/qwen"}
     assert created["transcribe"] == (audio_path, "fr")
     fake_summarizer.summarize.assert_called_once_with("local transcript", language="fr")
