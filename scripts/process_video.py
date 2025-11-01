@@ -156,10 +156,9 @@ def parse_args() -> argparse.Namespace:
 		help="Override the Lark tenant access token (defaults to LARK_TENANT_ACCESS_TOKEN env var)",
 	)
 	parser.add_argument(
-		"--lark-share-open-id",
-		dest="lark_share_open_ids",
-		action="append",
-		help="Open ID to grant read access to the created Lark document (repeatable)",
+		"--lark-user-access-token",
+		dest="lark_user_access_token",
+		help="Override the Lark user access token (defaults to LARK_USER_ACCESS_TOKEN env var)",
 	)
 	return parser.parse_args()
 
@@ -257,13 +256,15 @@ def main() -> None:
 				folder_token=args.lark_folder_token,
 				app_id=args.lark_app_id,
 				app_secret=args.lark_app_secret,
+				user_access_token=args.lark_user_access_token,
 				tenant_access_token=args.lark_tenant_token,
-				share_open_ids=args.lark_share_open_ids,
 			)
 			result["lark_document"] = lark_doc
 			print(f"Lark document created: {lark_doc['url']}")
 			for entry in lark_doc.get("shared_with", []):
-				print(f"Granted view access to open_id: {entry['open_id']}")
+				member_type = entry["member_type"]
+				member_id = entry["member_id"]
+				print(f"Granted view access to {member_type}: {member_id}")
 		except LarkDocError as exc:
 			raise RuntimeError(str(exc)) from exc
 

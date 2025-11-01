@@ -16,18 +16,19 @@ from lark_oapi.api.docx.v1 import (
 	TextElementBuilder,
 	TextRunBuilder,
 )
-from lark_oapi.api.drive.v1 import CreatePermissionMemberRequestBuilder
-from lark_oapi.api.drive.v1.model.base_member import BaseMemberBuilder
 
 
 class LarkDocError(RuntimeError):
 	"""Raised when a request to the Lark OpenAPI fails."""
 
 
-def _ensure_client_builder(app_id: str, app_secret: str, *, tenant_access_token: str | None) -> tuple[ClientBuilder, Optional[RequestOption]]:
+def _ensure_client_builder(app_id: str, app_secret: str, *, tenant_access_token: str | None, user_access_token: str | None) -> tuple[ClientBuilder, Optional[RequestOption]]:
 	builder = Client.builder().app_id(app_id).app_secret(app_secret).log_level(LogLevel.ERROR)
 	request_option: Optional[RequestOption] = None
-	if tenant_access_token:
+	if user_access_token:
+		builder.enable_set_token(True)
+		request_option = RequestOption.builder().user_access_token(user_access_token).build()
+	elif tenant_access_token:
 		builder.enable_set_token(True)
 		request_option = RequestOption.builder().tenant_access_token(tenant_access_token).build()
 	return builder, request_option
@@ -69,37 +70,6 @@ def derive_lark_title(summary: str, fallback: str) -> str:
 	return fallback
 
 
-def _share_document_with_open_ids(
-	client: Client,
-	document_id: str,
-	open_ids: List[str],
-	request_option: Optional[RequestOption],
-) -> list[dict[str, str]]:
-	shared: list[dict[str, str]] = []
-	for open_id in open_ids:
-		member = (
-			BaseMemberBuilder()
-			.member_type("openid")
-			.member_id(open_id)
-			.perm("view")
-			.perm_type("container")
-			.build()
-		)
-		request = (
-			CreatePermissionMemberRequestBuilder()
-			.token(document_id)
-			.type("docx")
-			.need_notification(False)
-			.request_body(member)
-			.build()
-		)
-		response = client.drive.v1.permission_member.create(request, request_option)
-		if response.code != 0:
-			raise LarkDocError(f"Failed to share Lark document with {open_id}: {response.msg}")
-		shared.append({"open_id": open_id})
-	return shared
-
-
 def create_summary_document(
 	summary: str,
 	*,
@@ -108,7 +78,7 @@ def create_summary_document(
 	app_id: str | None = None,
 	app_secret: str | None = None,
 	tenant_access_token: str | None = None,
-	share_open_ids: Optional[List[str]] = None,
+	user_access_token: str | None = None,
 ) -> dict[str, str]:
 	content = summary.strip()
 	if not content:
@@ -116,12 +86,14 @@ def create_summary_document(
 
 	app_id = app_id or os.getenv("LARK_APP_ID")
 	app_secret = app_secret or os.getenv("LARK_APP_SECRET")
+	folder_token = folder_token or os.getenv("LARK_FOLDER_TOKEN")
 	tenant_access_token = tenant_access_token or os.getenv("LARK_TENANT_ACCESS_TOKEN")
+	user_access_token = user_access_token or os.getenv("LARK_USER_ACCESS_TOKEN")
 
 	if not app_id or not app_secret:
 		raise LarkDocError("Lark app credentials are missing. Provide app_id and app_secret or set LARK_APP_ID/LARK_APP_SECRET.")
 
-	builder, request_option = _ensure_client_builder(app_id, app_secret, tenant_access_token=tenant_access_token)
+	builder, request_option = _ensure_client_builder(app_id, app_secret, tenant_access_token=tenant_access_token, user_access_token=user_access_token)
 	client = builder.build()
 
 	body_builder = CreateDocumentRequestBody.builder().title(title)
@@ -143,16 +115,11 @@ def create_summary_document(
 		block_resp = client.docx.v1.document_block_children.create(block_req, request_option)
 		if block_resp.code != 0:
 			raise LarkDocError(f"Failed to insert summary into Lark document: {block_resp.msg}")
-
-	shared = []
-	if share_open_ids:
-		shared = _share_document_with_open_ids(client, document_id, share_open_ids, request_option)
-
+	
 	return {
 		"document_id": document_id,
 		"title": title,
 		"url": f"https://open.feishu.cn/docx/{document_id}",
-		"shared_with": shared,
 	}
 
 
