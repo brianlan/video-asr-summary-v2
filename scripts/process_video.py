@@ -160,6 +160,11 @@ def parse_args() -> argparse.Namespace:
 		dest="lark_user_access_token",
 		help="Override the Lark user access token (defaults to LARK_USER_ACCESS_TOKEN env var)",
 	)
+	parser.add_argument(
+		"--lark-user-subdomain",
+		dest="lark_user_subdomain",
+		help="Override the Lark user access token (defaults to LARK_USER_SUBDOMAIN env var)",
+	)
 	return parser.parse_args()
 
 
@@ -258,13 +263,10 @@ def main() -> None:
 				app_secret=args.lark_app_secret,
 				user_access_token=args.lark_user_access_token,
 				tenant_access_token=args.lark_tenant_token,
+				user_subdomain=args.lark_user_subdomain,
 			)
 			result["lark_document"] = lark_doc
 			print(f"Lark document created: {lark_doc['url']}")
-			for entry in lark_doc.get("shared_with", []):
-				member_type = entry["member_type"]
-				member_id = entry["member_id"]
-				print(f"Granted view access to {member_type}: {member_id}")
 		except LarkDocError as exc:
 			raise RuntimeError(str(exc)) from exc
 

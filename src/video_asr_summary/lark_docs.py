@@ -79,6 +79,7 @@ def create_summary_document(
 	app_secret: str | None = None,
 	tenant_access_token: str | None = None,
 	user_access_token: str | None = None,
+	user_subdomain: str | None = None,
 ) -> dict[str, str]:
 	content = summary.strip()
 	if not content:
@@ -89,6 +90,7 @@ def create_summary_document(
 	folder_token = folder_token or os.getenv("LARK_FOLDER_TOKEN")
 	tenant_access_token = tenant_access_token or os.getenv("LARK_TENANT_ACCESS_TOKEN")
 	user_access_token = user_access_token or os.getenv("LARK_USER_ACCESS_TOKEN")
+	user_subdomain = user_subdomain or os.getenv("LARK_USER_SUBDOMAIN")
 
 	if not app_id or not app_secret:
 		raise LarkDocError("Lark app credentials are missing. Provide app_id and app_secret or set LARK_APP_ID/LARK_APP_SECRET.")
@@ -119,7 +121,7 @@ def create_summary_document(
 	return {
 		"document_id": document_id,
 		"title": title,
-		"url": f"https://open.feishu.cn/docx/{document_id}",
+		"url": f"https://{user_subdomain}.feishu.cn/docx/{document_id}",
 	}
 
 
