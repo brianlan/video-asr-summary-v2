@@ -117,30 +117,28 @@ def test_create_summary_document_builds_blocks_and_uses_credentials(monkeypatch:
 	assert recorded["create_document_called"] is True
 
 	block_calls = recorded["block_calls"]
-	assert len(block_calls) == 6
+	assert len(block_calls) == 1
 
-	heading_call = block_calls[0]
-	assert heading_call["block_id"] == "Doc123"
-	assert heading_call["index"] == 0
-	assert heading_call["option"] is request_option
-	assert len(heading_call["children"]) == 1
-	heading_block = heading_call["children"][0]
+	batched_call = block_calls[0]
+	assert batched_call["block_id"] == "Doc123"
+	assert batched_call["index"] == 0
+	assert batched_call["option"] is request_option
+	assert len(batched_call["children"]) == 6
+
+	children = batched_call["children"]
+
+	heading_block = children[0]
 	assert heading_block.block_type == 3
 	assert heading_block.heading1.elements[0].text_run.content == "Top Heading"
 
-	paragraph_call = block_calls[1]
-	assert paragraph_call["block_id"] == "Doc123"
-	assert paragraph_call["index"] == 1
-	assert len(paragraph_call["children"]) == 1
-	sentence_elements = paragraph_call["children"][0].text.elements
+	paragraph_block = children[1]
+	assert paragraph_block.block_type == 2
+	sentence_elements = paragraph_block.text.elements
 	assert [elem.text_run.content for elem in sentence_elements] == ["Intro paragraph with ", "bold", " text."]
 	bold_styles = [elem.text_run.text_element_style.bold if elem.text_run.text_element_style else False for elem in sentence_elements]
 	assert bold_styles == [False, True, False]
 
-	bullet_item_calls = block_calls[2:4]
-	assert [call["block_id"] for call in bullet_item_calls] == ["Doc123", "Doc123"]
-	assert [call["index"] for call in bullet_item_calls] == [2, 3]
-	bullet_blocks = [call["children"][0] for call in bullet_item_calls]
+	bullet_blocks = children[2:4]
 	assert [block.block_type for block in bullet_blocks] == [2, 2]
 	bullet_texts = [
 		[elem.text_run.content for elem in block.text.elements]
@@ -148,10 +146,7 @@ def test_create_summary_document_builds_blocks_and_uses_credentials(monkeypatch:
 	]
 	assert bullet_texts == [["• ", "First bullet"], ["• ", "Second bullet"]]
 
-	ordered_item_calls = block_calls[4:]
-	assert [call["block_id"] for call in ordered_item_calls] == ["Doc123", "Doc123"]
-	assert [call["index"] for call in ordered_item_calls] == [4, 5]
-	ordered_blocks = [call["children"][0] for call in ordered_item_calls]
+	ordered_blocks = children[4:]
 	assert [block.block_type for block in ordered_blocks] == [2, 2]
 	ordered_texts = [
 		[elem.text_run.content for elem in block.text.elements]

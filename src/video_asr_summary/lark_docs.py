@@ -210,9 +210,26 @@ def _blocks_for_element(element: _DocumentElement) -> List[Block]:
 		text = _build_text(element.spans)
 		return [BlockBuilder().block_type(_PARAGRAPH_BLOCK_TYPE).text(text).build()]
 
- 
-	if element.kind in {"unordered_list", "ordered_list"}:
-		return []
+	if element.kind == "unordered_list" and element.items:
+		blocks: List[Block] = []
+		for spans in element.items:
+			if not spans:
+				continue
+			prefixed_spans = [_InlineSpan("• ")] + list(spans)
+			text = _build_text(prefixed_spans)
+			blocks.append(BlockBuilder().block_type(_PARAGRAPH_BLOCK_TYPE).text(text).build())
+		return blocks
+
+	if element.kind == "ordered_list" and element.items:
+		blocks = []
+		for order_index, spans in enumerate(element.items, start=1):
+			if not spans:
+				continue
+			prefix = _InlineSpan(f"{order_index}. ")
+			prefixed_spans = [prefix] + list(spans)
+			text = _build_text(prefixed_spans)
+			blocks.append(BlockBuilder().block_type(_PARAGRAPH_BLOCK_TYPE).text(text).build())
+		return blocks
 
 	return []
 
@@ -224,8 +241,6 @@ def _append_elements_to_document(
 	elements: Iterable[_DocumentElement],
 	request_option: Optional[RequestOption],
 ) -> None:
-	index = 0
-
 	def create_blocks(parent_id: str, insert_index: int, blocks: List[Block], *, ctx: str) -> List[Block]:
 		body = CreateDocumentBlockChildrenRequestBody.builder().index(insert_index).children(blocks).build()
 		request = (
@@ -243,37 +258,18 @@ def _append_elements_to_document(
 		children = getattr(getattr(response, "data", None), "children", None) or []
 		return children
 
+	blocks_to_insert: List[Block] = []
+
 	for element in elements:
-		from loguru import logger
-		logger.debug(f"Processing element: {element}")
-		if element.kind == "unordered_list" and element.items:
-			for spans in element.items:
-				if not spans:
-					continue
-				prefixed_spans = [_InlineSpan("• ")] + list(spans)
-				text = _build_text(prefixed_spans)
-				block = BlockBuilder().block_type(_PARAGRAPH_BLOCK_TYPE).text(text).build()
-				create_blocks(document_id, index, [block], ctx="unordered-list:paragraph")
-				index += 1
-			continue
-
-		if element.kind == "ordered_list" and element.items:
-			for order_index, spans in enumerate(element.items, start=1):
-				if not spans:
-					continue
-				prefix = _InlineSpan(f"{order_index}. ")
-				prefixed_spans = [prefix] + list(spans)
-				text = _build_text(prefixed_spans)
-				block = BlockBuilder().block_type(_PARAGRAPH_BLOCK_TYPE).text(text).build()
-				create_blocks(document_id, index, [block], ctx="ordered-list:paragraph")
-				index += 1
-			continue
-
 		blocks = _blocks_for_element(element)
 		if not blocks:
 			continue
-		create_blocks(document_id, index, blocks, ctx=f"{element.kind}")
-		index += len(blocks)
+		blocks_to_insert.extend(blocks)
+
+	if not blocks_to_insert:
+		return
+
+	create_blocks(document_id, 0, blocks_to_insert, ctx="batched-insert")
 
 
 def derive_lark_title(summary: str, fallback: str) -> str:

@@ -34,13 +34,21 @@ class ChataiSummarizer:
         max_tokens: int | None = None,
     ) -> str:
         prompt_instructions = instructions or (
-            "You are a writing assistant. Reorganize the provided transcript into a clear, well-structured "
-            "markdown document. Begin with a single H1 heading that serves as a concise title capturing the "
-            "overall theme, then rewrite the remaining content into organized sections and bullet lists. "
-            "Remove filler words, rewrite informal phrases into formal prose, and respond using markdown only."
+            "Role: You are an expert editor and content analyst.\n\n"
+            "Task: I will provide you with a raw, verbatim transcript from a video. This text is highly conversational, likely containing filler words, redundancies, and a loose logical structure. Your task is to reconstruct this text into a well-structured, logically coherent, and readable article, not a brief summary.\n\n"
+            "Key Requirements:\n"
+            "  - Cleanse and Refine: Remove all meaningless filler words (e.g., 'uh,' 'um,' 'like,' 'you know'), verbal tics, and obvious repetitions. Convert overly conversational phrasing into more formal, fluid written language.\n"
+            "  - Build Logical Structure: Reorganize the content. Use clear headings, subheadings (if necessary), and paragraphs to separate distinct topics or arguments. Ensure the article has a clear introduction, body, and conclusion.\n"
+            "  - Preserve Core Arguments & Reasoning (Most Important): Clearly identify all main points or conclusions in the text. For each point, you must retain the key evidence, reasoning, data, or examples the speaker used to support it. Do not just state 'The speaker believes X.' You must elaborate: 'The speaker believes X because of Y and Z.'\n"
+            "  - Retain Significant Details & Anecdotes: While ensuring flow, preserve specific details, anecdotes, or personal stories that add depth, context, or interest. If the speaker told a short story to illustrate a point, retain the essence of that story.\n"
+            "  - Maintain Neutrality and Fidelity: Preserve the speaker's original intent and stance. Do not add your own opinions or interpretations.\n\n"
+            "Output Format: \n"
+            "  - Use Markdown for formatting.\n"
+            "  - Begin with a single H1 heading that serves as a concise title capturing the overall theme.\n"
+            "  - You must not include any conversational introduction, preamble, or concluding remarks (e.g., do not say 'Okay, here is...' or 'I have processed...')..\n\n"
         )
         if language:
-            prompt_instructions += f" Produce the markdown in {language}."
+            prompt_instructions += f"Produce the markdown in {language}."
 
         payload: dict[str, Any] = {
             "model": self.model,

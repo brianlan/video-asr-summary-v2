@@ -170,6 +170,12 @@ def parse_args() -> argparse.Namespace:
 		dest="lark_api_domain",
 		help="Override the Lark OpenAPI domain (defaults to LARK_API_DOMAIN env var or SDK default)",
 	)
+	parser.add_argument(
+		"--summarizer-model",
+		dest="summarizer_model",
+		default="gpt-4o-mini",
+		help="Override the model used for summarization (defaults to SUMMARIZER_MODEL env var or SDK default)",
+	)
 	return parser.parse_args()
 
 
@@ -236,6 +242,7 @@ def main() -> None:
 				max_segment_duration=args.max_segment_duration,
 				asr_backend=args.asr_backend,
 				local_asr_options=local_asr_options,
+				summarizer_model=args.summarizer_model,
 			)
 	else:
 		video_path = Path(video_input)
@@ -250,6 +257,7 @@ def main() -> None:
 			max_segment_duration=args.max_segment_duration,
 			asr_backend=args.asr_backend,
 			local_asr_options=local_asr_options,
+			summarizer_model=args.summarizer_model,
 		)
 
 	summary_text = result.get("summary")

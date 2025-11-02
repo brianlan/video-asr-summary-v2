@@ -23,6 +23,7 @@ def process_video(
     local_client: Optional[LocalQwenASRClient] = None,
     local_asr_options: Optional[dict[str, Any]] = None,
     summarizer: Optional[ChataiSummarizer] = None,
+    summarizer_model: str | None = None,
     cleanup: bool = False,
 ) -> dict[str, Any]:
     """Run the end-to-end pipeline from video to summary."""
@@ -66,7 +67,13 @@ def process_video(
     if not transcript:
         transcript = ""
 
-    llm = summarizer or ChataiSummarizer()
+    if summarizer is not None:
+        llm = summarizer
+    else:
+        summarizer_kwargs: dict[str, Any] = {}
+        if summarizer_model is not None:
+            summarizer_kwargs["model"] = summarizer_model
+        llm = ChataiSummarizer(**summarizer_kwargs)
     summary = llm.summarize(transcript, language=language)
 
     if cleanup:

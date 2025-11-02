@@ -44,7 +44,7 @@ def test_summarize_returns_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured_payload["url"].endswith("/chat/completions")
     assert captured_payload["headers"]["Authorization"] == "Bearer token"
     system_prompt = captured_payload["json"]["messages"][0]["content"]
-    assert "Reorganize the provided transcript" in system_prompt
+    assert "Role: You are an expert editor and content analyst." in system_prompt
     assert "Begin with a single H1 heading" in system_prompt
 
 

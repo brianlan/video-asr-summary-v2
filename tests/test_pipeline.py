@@ -80,6 +80,41 @@ def test_pipeline_uses_default_clients(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert result == {"transcript": "text", "summary": "# Value"}
 
 
+def test_pipeline_allows_overriding_summarizer_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from video_asr_summary import pipeline
+
+    audio_path = tmp_path / "audio.wav"
+    monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path)
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+
+    class StubASR:
+        def transcribe(self, path: Path, *, language: str) -> str:
+            return "full transcript"
+
+    captured: dict[str, str] = {}
+
+    class StubSummarizer:
+        def __init__(self, *, model: str = "gpt-4o-mini") -> None:
+            captured["model"] = model
+
+        def summarize(self, *_args, **_kwargs) -> str:
+            return "# stub summary"
+
+    monkeypatch.setattr("video_asr_summary.pipeline.BailianASRClient", StubASR)
+    monkeypatch.setattr("video_asr_summary.pipeline.ChataiSummarizer", StubSummarizer)
+
+    result = pipeline.process_video(
+        video_path=tmp_path / "clip.mp4",
+        summarizer_model="gpt-custom",
+    )
+
+    assert captured["model"] == "gpt-custom"
+    assert result == {"transcript": "full transcript", "summary": "# stub summary"}
+
+
 def test_pipeline_transcribes_multiple_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from video_asr_summary import pipeline
 
