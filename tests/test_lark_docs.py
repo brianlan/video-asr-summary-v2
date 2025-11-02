@@ -30,6 +30,7 @@ def test_create_summary_document_builds_blocks_and_uses_credentials(monkeypatch:
 			recorded["title"] = request.request_body.title
 			recorded["folder"] = request.request_body.folder_token
 			recorded["document_option"] = option
+			recorded["create_document_called"] = True
 			return SimpleNamespace(
 				code=0,
 				msg="success",
@@ -44,10 +45,24 @@ def test_create_summary_document_builds_blocks_and_uses_credentials(monkeypatch:
 
 	class FakeBlockResource:
 		def create(self, request, option=None):
-			recorded["blocks"] = request.request_body.children
-			recorded["index"] = request.request_body.index
-			recorded["block_option"] = option
-			return SimpleNamespace(code=0, msg="success", data=None)
+			call = {
+				"block_id": request.block_id,
+				"index": request.request_body.index,
+				"children": request.request_body.children,
+				"option": option,
+			}
+			recorded.setdefault("block_calls", []).append(call)
+
+			created_children = []
+			for idx, block in enumerate(request.request_body.children):
+				block.block_id = f"blk_{len(recorded['block_calls'])}_{idx}"
+				created_children.append(block)
+
+			return SimpleNamespace(
+				code=0,
+				msg="success",
+				data=SimpleNamespace(children=created_children, document_revision_id=len(recorded["block_calls"]), client_token="token"),
+			)
 
 	class FakeDocxV1:
 		def __init__(self):
@@ -68,17 +83,18 @@ def test_create_summary_document_builds_blocks_and_uses_credentials(monkeypatch:
 
 	request_option = SimpleNamespace(option="user_access")
 
-	def fake_builder(app_id: str, app_secret: str, *, tenant_access_token=None, user_access_token=None):
+	def fake_builder(app_id: str, app_secret: str, *, tenant_access_token=None, user_access_token=None, domain=None):
 		recorded["app_id"] = app_id
 		recorded["app_secret"] = app_secret
 		recorded["tenant"] = tenant_access_token
 		recorded["user_access_token"] = user_access_token
+		recorded["domain"] = domain
 		return FakeBuilder(), request_option
 
 	monkeypatch.setattr(lark_docs, "_ensure_client_builder", fake_builder)
 
 	result = create_summary_document(
-		"First paragraph.\n\nSecond paragraph.",
+		"# Top Heading\n\nIntro paragraph with **bold** text.\n\n- First bullet\n- Second bullet\n\n1. First item\n2. Second item\n",
 		title="Provided Title",
 		folder_token="fld_token",
 		app_id="app-id",
@@ -94,16 +110,54 @@ def test_create_summary_document_builds_blocks_and_uses_credentials(monkeypatch:
 	assert recorded["app_secret"] == "app-secret"
 	assert recorded["tenant"] is None
 	assert recorded["user_access_token"] == "user-access-token"
+	assert recorded["domain"] is None
 	assert recorded["title"] == "Provided Title"
 	assert recorded["folder"] == "fld_token"
-	assert recorded["index"] == 0
 	assert recorded["document_option"] is request_option
-	assert recorded["block_option"] is request_option
+	assert recorded["create_document_called"] is True
 
-	blocks = recorded["blocks"]
-	assert len(blocks) == 2
-	contents = [block.text.elements[0].text_run.content for block in blocks]
-	assert contents == ["First paragraph.", "Second paragraph."]
+	block_calls = recorded["block_calls"]
+	assert len(block_calls) == 6
+
+	heading_call = block_calls[0]
+	assert heading_call["block_id"] == "Doc123"
+	assert heading_call["index"] == 0
+	assert heading_call["option"] is request_option
+	assert len(heading_call["children"]) == 1
+	heading_block = heading_call["children"][0]
+	assert heading_block.block_type == 3
+	assert heading_block.heading1.elements[0].text_run.content == "Top Heading"
+
+	paragraph_call = block_calls[1]
+	assert paragraph_call["block_id"] == "Doc123"
+	assert paragraph_call["index"] == 1
+	assert len(paragraph_call["children"]) == 1
+	sentence_elements = paragraph_call["children"][0].text.elements
+	assert [elem.text_run.content for elem in sentence_elements] == ["Intro paragraph with ", "bold", " text."]
+	bold_styles = [elem.text_run.text_element_style.bold if elem.text_run.text_element_style else False for elem in sentence_elements]
+	assert bold_styles == [False, True, False]
+
+	bullet_item_calls = block_calls[2:4]
+	assert [call["block_id"] for call in bullet_item_calls] == ["Doc123", "Doc123"]
+	assert [call["index"] for call in bullet_item_calls] == [2, 3]
+	bullet_blocks = [call["children"][0] for call in bullet_item_calls]
+	assert [block.block_type for block in bullet_blocks] == [2, 2]
+	bullet_texts = [
+		[elem.text_run.content for elem in block.text.elements]
+		for block in bullet_blocks
+	]
+	assert bullet_texts == [["• ", "First bullet"], ["• ", "Second bullet"]]
+
+	ordered_item_calls = block_calls[4:]
+	assert [call["block_id"] for call in ordered_item_calls] == ["Doc123", "Doc123"]
+	assert [call["index"] for call in ordered_item_calls] == [4, 5]
+	ordered_blocks = [call["children"][0] for call in ordered_item_calls]
+	assert [block.block_type for block in ordered_blocks] == [2, 2]
+	ordered_texts = [
+		[elem.text_run.content for elem in block.text.elements]
+		for block in ordered_blocks
+	]
+	assert ordered_texts == [["1. ", "First item"], ["2. ", "Second item"]]
 
 
 def test_create_summary_document_requires_non_empty_summary() -> None:

@@ -163,7 +163,12 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--lark-user-subdomain",
 		dest="lark_user_subdomain",
-		help="Override the Lark user access token (defaults to LARK_USER_SUBDOMAIN env var)",
+		help="Override the Lark user subdomain (defaults to LARK_USER_SUBDOMAIN env var)",
+	)
+	parser.add_argument(
+		"--lark-api-domain",
+		dest="lark_api_domain",
+		help="Override the Lark OpenAPI domain (defaults to LARK_API_DOMAIN env var or SDK default)",
 	)
 	return parser.parse_args()
 
@@ -264,6 +269,7 @@ def main() -> None:
 				user_access_token=args.lark_user_access_token,
 				tenant_access_token=args.lark_tenant_token,
 				user_subdomain=args.lark_user_subdomain,
+				api_domain=args.lark_api_domain,
 			)
 			result["lark_document"] = lark_doc
 			print(f"Lark document created: {lark_doc['url']}")
