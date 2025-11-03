@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -20,9 +21,26 @@ from lark_oapi.api.docx.v1 import (
 	TextRunBuilder,
 )
 
+import requests
+
 
 class LarkDocError(RuntimeError):
 	"""Raised when a request to the Lark OpenAPI fails."""
+
+
+def _send_personal_message(access_token: str, user_id: str, message: str) -> None:
+	url = "https://open.feishu.cn/open-apis/im/v1/messages"
+	headers = {
+		"Content-Type": "application/json",
+		"Authorization": f"Bearer {access_token}",
+	}
+	params = {"receive_id_type": "user_id"}
+	body = {
+		"receive_id": user_id,
+		"msg_type": "text",
+		"content": json.dumps({"text": message}),
+	}
+	requests.post(url, headers=headers, params=params, json=body, timeout=10)
 
 
 def _ensure_client_builder(
@@ -296,6 +314,7 @@ def create_summary_document(
 	user_access_token: str | None = None,
 	user_subdomain: str | None = None,
 	api_domain: str | None = None,
+	message_receiver_id: str | None = None,
 ) -> dict[str, str]:
 	content = summary.strip()
 	if not content:
@@ -308,6 +327,7 @@ def create_summary_document(
 	user_access_token = user_access_token or os.getenv("LARK_USER_ACCESS_TOKEN")
 	user_subdomain = user_subdomain or os.getenv("LARK_USER_SUBDOMAIN")
 	api_domain = api_domain or os.getenv("LARK_API_DOMAIN")
+	message_receiver_id = message_receiver_id or os.getenv("LARK_MESSAGE_RECEIVER_ID")
 
 	if not app_id or not app_secret:
 		raise LarkDocError("Lark app credentials are missing. Provide app_id and app_secret or set LARK_APP_ID/LARK_APP_SECRET.")
@@ -326,29 +346,63 @@ def create_summary_document(
 		body_builder.folder_token(folder_token)
 
 	create_req = CreateDocumentRequest.builder().request_body(body_builder.build()).build()
-	create_resp = client.docx.v1.document.create(create_req, request_option)
-	if create_resp.code != 0 or not create_resp.data or not create_resp.data.document:
-		raise LarkDocError(f"Failed to create Lark document: {create_resp.msg}")
 
-	document = create_resp.data.document
-	document_id = document.document_id
+	result: dict[str, str] | None = None
+	error: LarkDocError | None = None
+	attempted = False
 
-	elements = _parse_summary_elements(content)
-	if elements:
-		_append_elements_to_document(
-			client.docx.v1.document_block_children,
-			document_id,
-			elements,
-			request_option,
-		)
+	try:
+		attempted = True
+		create_resp = client.docx.v1.document.create(create_req, request_option)
+		if create_resp.code != 0 or not create_resp.data or not create_resp.data.document:
+			raise LarkDocError(f"Failed to create Lark document: {create_resp.msg}")
 
-	base_host = f"{user_subdomain}.feishu.cn" if user_subdomain else "open.feishu.cn"
+		document = create_resp.data.document
+		document_id = document.document_id
 
-	return {
-		"document_id": document_id,
-		"title": title,
-		"url": f"https://{base_host}/docx/{document_id}",
-	}
+		elements = _parse_summary_elements(content)
+		if elements:
+			_append_elements_to_document(
+				client.docx.v1.document_block_children,
+				document_id,
+				elements,
+				request_option,
+			)
+
+		base_host = f"{user_subdomain}.feishu.cn" if user_subdomain else "open.feishu.cn"
+		result = {
+			"document_id": document_id,
+			"title": title,
+			"url": f"https://{base_host}/docx/{document_id}",
+		}
+	except LarkDocError as exc:
+		error = exc
+	except Exception as exc:  # pragma: no cover - unexpected errors still need conversion
+		error = LarkDocError(str(exc))
+
+	if tenant_access_token and message_receiver_id and attempted:
+		if result is not None:
+			message = (
+				"Lark document created successfully.\n"
+				f"Document ID: {result['document_id']}\n"
+				f"Title: {result['title']}\n"
+				f"URL: {result['url']}"
+			)
+		else:
+			error_text = str(error) if error is not None else "Unknown error"
+			message = f"Failed to create Lark document.\nError: {error_text}"
+		try:
+			_send_personal_message(tenant_access_token, message_receiver_id, message)
+		except Exception:
+			pass
+
+	if error is not None:
+		raise error
+
+	if result is None:
+		raise LarkDocError("Unknown error occurred while creating Lark document.")
+
+	return result
 
 
 __all__ = ["LarkDocError", "create_summary_document", "derive_lark_title"]

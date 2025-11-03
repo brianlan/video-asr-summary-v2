@@ -171,6 +171,12 @@ def parse_args() -> argparse.Namespace:
 		help="Override the Lark OpenAPI domain (defaults to LARK_API_DOMAIN env var or SDK default)",
 	)
 	parser.add_argument(
+		"--message-receiver-id",
+		dest="message_receiver_id",
+		default="1gc832ed",
+		help="User ID that receives Lark notification messages",
+	)
+	parser.add_argument(
 		"--summarizer-model",
 		dest="summarizer_model",
 		default="gpt-4o-mini",
@@ -278,6 +284,7 @@ def main() -> None:
 				tenant_access_token=args.lark_tenant_token,
 				user_subdomain=args.lark_user_subdomain,
 				api_domain=args.lark_api_domain,
+				message_receiver_id=args.message_receiver_id,
 			)
 			result["lark_document"] = lark_doc
 			print(f"Lark document created: {lark_doc['url']}")

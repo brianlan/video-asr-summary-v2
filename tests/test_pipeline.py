@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import importlib.util
 from pathlib import Path
 from typing import Dict
 from unittest.mock import MagicMock
@@ -202,3 +204,23 @@ def test_pipeline_raises_for_unknown_backend(tmp_path: Path, monkeypatch: pytest
 
     with pytest.raises(ValueError):
         pipeline.process_video(tmp_path / "video.mp4", asr_backend="unknown")
+
+
+def test_process_video_cli_exposes_message_receiver_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    script_path = Path(__file__).resolve().parent.parent / "scripts" / "process_video.py"
+    spec = importlib.util.spec_from_file_location("process_video_cli", script_path)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)  # type: ignore[assignment]
+
+    def run_with_args(argv: list[str]) -> argparse.Namespace:
+        monkeypatch.setattr(cli.sys, "argv", argv)
+        return cli.parse_args()
+
+    args_default = run_with_args(["process_video", "sample.mp4"])
+    assert args_default.message_receiver_id == "1gc832ed"
+
+    args_custom = run_with_args(
+        ["process_video", "sample.mp4", "--message-receiver-id", "custom-user"]
+    )
+    assert args_custom.message_receiver_id == "custom-user"

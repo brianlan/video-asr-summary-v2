@@ -155,6 +155,132 @@ def test_create_summary_document_builds_blocks_and_uses_credentials(monkeypatch:
 	assert ordered_texts == [["1. ", "First item"], ["2. ", "Second item"]]
 
 
+def test_create_summary_document_sends_notification_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+	from video_asr_summary import lark_docs
+
+	recorded: dict[str, object] = {}
+
+	class FakeDocumentResource:
+		def create(self, request, option=None):
+			recorded["title"] = request.request_body.title
+			return SimpleNamespace(
+				code=0,
+				msg="success",
+				data=SimpleNamespace(
+					document=SimpleNamespace(
+						document_id="DocSuccess",
+						revision_id=1,
+						title=request.request_body.title,
+					)
+				),
+			)
+
+	class FakeBlockResource:
+		def create(self, request, option=None):
+			return SimpleNamespace(
+				code=0,
+				msg="success",
+				data=SimpleNamespace(children=[], document_revision_id=1, client_token="token"),
+			)
+
+	class FakeDocxV1:
+		def __init__(self):
+			self.document = FakeDocumentResource()
+			self.document_block_children = FakeBlockResource()
+
+	class FakeDocxService:
+		def __init__(self):
+			self.v1 = FakeDocxV1()
+
+	class FakeClient:
+		def __init__(self):
+			self.docx = FakeDocxService()
+
+	class FakeBuilder:
+		def build(self):
+			return FakeClient()
+
+	monkeypatch.setattr(lark_docs, "_ensure_client_builder", lambda *args, **kwargs: (FakeBuilder(), None))
+
+	messages: list[tuple[str, str, str]] = []
+
+	def fake_send(access_token: str, receiver_id: str, message: str) -> None:
+		messages.append((access_token, receiver_id, message))
+
+	monkeypatch.setattr(lark_docs, "_send_personal_message", fake_send)
+
+	result = create_summary_document(
+		"Summary paragraph.",
+		title="Notification Title",
+		app_id="app-id",
+		app_secret="app-secret",
+		tenant_access_token="token-123",
+		message_receiver_id="user-999",
+	)
+
+	assert result["document_id"] == "DocSuccess"
+	assert messages == [
+		(
+			"token-123",
+			"user-999",
+			"Lark document created successfully.\nDocument ID: DocSuccess\nTitle: Notification Title\nURL: https://open.feishu.cn/docx/DocSuccess",
+		)
+	]
+
+
+def test_create_summary_document_reports_error_via_notification(monkeypatch: pytest.MonkeyPatch) -> None:
+	from video_asr_summary import lark_docs
+
+	class FakeDocumentResource:
+		def create(self, request, option=None):
+			return SimpleNamespace(code=1, msg="permission denied", data=None)
+
+	class FakeDocxV1:
+		def __init__(self):
+			self.document = FakeDocumentResource()
+			self.document_block_children = None
+
+	class FakeDocxService:
+		def __init__(self):
+			self.v1 = FakeDocxV1()
+
+	class FakeClient:
+		def __init__(self):
+			self.docx = FakeDocxService()
+
+	class FakeBuilder:
+		def build(self):
+			return FakeClient()
+
+	monkeypatch.setattr(lark_docs, "_ensure_client_builder", lambda *args, **kwargs: (FakeBuilder(), None))
+
+	messages: list[tuple[str, str, str]] = []
+
+	def fake_send(access_token: str, receiver_id: str, message: str) -> None:
+		messages.append((access_token, receiver_id, message))
+
+	monkeypatch.setattr(lark_docs, "_send_personal_message", fake_send)
+
+	with pytest.raises(LarkDocError) as excinfo:
+		create_summary_document(
+			"Summary paragraph.",
+			title="Error Title",
+			app_id="app-id",
+			app_secret="app-secret",
+			tenant_access_token="token-456",
+			message_receiver_id="user-abc",
+		)
+
+	assert "Failed to create Lark document" in str(excinfo.value)
+	assert messages == [
+		(
+			"token-456",
+			"user-abc",
+			"Failed to create Lark document.\nError: Failed to create Lark document: permission denied",
+		)
+	]
+
+
 def test_create_summary_document_requires_non_empty_summary() -> None:
 	with pytest.raises(LarkDocError):
 		create_summary_document("   ", title="Title", app_id="app", app_secret="secret")
