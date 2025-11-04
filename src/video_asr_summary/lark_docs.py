@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
 from lark_oapi.client import Client, ClientBuilder, LogLevel, RequestOption
@@ -26,6 +28,92 @@ import requests
 
 class LarkDocError(RuntimeError):
 	"""Raised when a request to the Lark OpenAPI fails."""
+
+
+_TOKEN_REQUEST_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+_TOKEN_REFRESH_INTERVAL = 2 * 60 * 60  # seconds
+_TOKEN_CACHE_ENV = "LARK_TENANT_TOKEN_CACHE_PATH"
+
+
+def _tenant_token_cache_path() -> Path:
+	override = os.getenv(_TOKEN_CACHE_ENV)
+	if override:
+		return Path(override)
+
+	base_dir = os.getenv("XDG_CACHE_HOME")
+	if base_dir:
+		base = Path(base_dir)
+	else:
+		base = Path.home() / ".cache"
+	return base / "video_asr_summary" / "tenant_token.json"
+
+
+def _load_cached_tenant_token(cache_path: Path) -> tuple[str, float] | None:
+	try:
+		data = json.loads(cache_path.read_text())
+	except FileNotFoundError:
+		return None
+	except (OSError, json.JSONDecodeError):
+		return None
+
+	token = data.get("token")
+	updated_at = data.get("updated_at")
+	if not isinstance(token, str) or not token:
+		return None
+	if not isinstance(updated_at, (int, float)):
+		return None
+	return token, float(updated_at)
+
+
+def _store_cached_tenant_token(cache_path: Path, token: str, updated_at: float) -> None:
+	try:
+		cache_path.parent.mkdir(parents=True, exist_ok=True)
+		cache_path.write_text(json.dumps({"token": token, "updated_at": updated_at}))
+	except OSError:
+		pass
+
+
+def _request_tenant_access_token(app_id: str, app_secret: str) -> tuple[str, float]:
+	headers = {"Content-Type": "application/json"}
+	payload = {"app_id": app_id, "app_secret": app_secret}
+
+	try:
+		response = requests.post(_TOKEN_REQUEST_URL, headers=headers, json=payload, timeout=10)
+	except requests.RequestException as exc:  # pragma: no cover - network issues handled at runtime
+		raise LarkDocError(f"Failed to obtain tenant access token: {exc}") from exc
+
+	try:
+		data = response.json()
+	except ValueError as exc:
+		raise LarkDocError("Failed to parse tenant access token response as JSON.") from exc
+
+	if data.get("code") != 0 or not data.get("tenant_access_token"):
+		message = data.get("msg") or "unknown error"
+		raise LarkDocError(f"Failed to obtain tenant access token: {message}")
+
+	return data["tenant_access_token"], time.time()
+
+
+def _resolve_tenant_access_token(
+	app_id: str,
+	app_secret: str,
+	tenant_access_token: str | None,
+) -> str | None:
+	if tenant_access_token:
+		return tenant_access_token
+
+	cache_path = _tenant_token_cache_path()
+	now = time.time()
+
+	cached = _load_cached_tenant_token(cache_path)
+	if cached:
+		token, updated_at = cached
+		if now - updated_at < _TOKEN_REFRESH_INTERVAL:
+			return token
+
+	token, updated_at = _request_tenant_access_token(app_id, app_secret)
+	_store_cached_tenant_token(cache_path, token, updated_at)
+	return token
 
 
 def _send_personal_message(access_token: str, user_id: str, message: str) -> None:
@@ -323,7 +411,7 @@ def create_summary_document(
 	app_id = app_id or os.getenv("LARK_APP_ID")
 	app_secret = app_secret or os.getenv("LARK_APP_SECRET")
 	folder_token = folder_token or os.getenv("LARK_FOLDER_TOKEN")
-	tenant_access_token = tenant_access_token or os.getenv("LARK_TENANT_ACCESS_TOKEN")
+	provided_tenant_access_token = tenant_access_token or os.getenv("LARK_TENANT_ACCESS_TOKEN")
 	user_access_token = user_access_token or os.getenv("LARK_USER_ACCESS_TOKEN")
 	user_subdomain = user_subdomain or os.getenv("LARK_USER_SUBDOMAIN")
 	api_domain = api_domain or os.getenv("LARK_API_DOMAIN")
@@ -331,6 +419,8 @@ def create_summary_document(
 
 	if not app_id or not app_secret:
 		raise LarkDocError("Lark app credentials are missing. Provide app_id and app_secret or set LARK_APP_ID/LARK_APP_SECRET.")
+
+	tenant_access_token = _resolve_tenant_access_token(app_id, app_secret, provided_tenant_access_token)
 
 	builder, request_option = _ensure_client_builder(
 		app_id,

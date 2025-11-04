@@ -151,11 +151,6 @@ def parse_args() -> argparse.Namespace:
 		help="Override the Lark app secret (defaults to LARK_APP_SECRET env var)",
 	)
 	parser.add_argument(
-		"--lark-tenant-token",
-		dest="lark_tenant_token",
-		help="Override the Lark tenant access token (defaults to LARK_TENANT_ACCESS_TOKEN env var)",
-	)
-	parser.add_argument(
 		"--lark-user-access-token",
 		dest="lark_user_access_token",
 		help="Override the Lark user access token (defaults to LARK_USER_ACCESS_TOKEN env var)",
@@ -281,7 +276,6 @@ def main() -> None:
 				app_id=args.lark_app_id,
 				app_secret=args.lark_app_secret,
 				user_access_token=args.lark_user_access_token,
-				tenant_access_token=args.lark_tenant_token,
 				user_subdomain=args.lark_user_subdomain,
 				api_domain=args.lark_api_domain,
 				message_receiver_id=args.message_receiver_id,

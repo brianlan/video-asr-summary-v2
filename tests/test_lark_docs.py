@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +26,8 @@ def test_create_summary_document_builds_blocks_and_uses_credentials(monkeypatch:
 	from video_asr_summary import lark_docs
 
 	recorded: dict[str, object] = {}
+
+	monkeypatch.setattr(lark_docs, "_resolve_tenant_access_token", lambda *args, **kwargs: None)
 
 	class FakeDocumentResource:
 		def create(self, request, option=None):
@@ -160,6 +164,8 @@ def test_create_summary_document_sends_notification_on_success(monkeypatch: pyte
 
 	recorded: dict[str, object] = {}
 
+	monkeypatch.setattr(lark_docs, "_resolve_tenant_access_token", lambda *args, **kwargs: "token-123")
+
 	class FakeDocumentResource:
 		def create(self, request, option=None):
 			recorded["title"] = request.request_body.title
@@ -214,7 +220,6 @@ def test_create_summary_document_sends_notification_on_success(monkeypatch: pyte
 		title="Notification Title",
 		app_id="app-id",
 		app_secret="app-secret",
-		tenant_access_token="token-123",
 		message_receiver_id="user-999",
 	)
 
@@ -230,6 +235,8 @@ def test_create_summary_document_sends_notification_on_success(monkeypatch: pyte
 
 def test_create_summary_document_reports_error_via_notification(monkeypatch: pytest.MonkeyPatch) -> None:
 	from video_asr_summary import lark_docs
+
+	monkeypatch.setattr(lark_docs, "_resolve_tenant_access_token", lambda *args, **kwargs: "token-456")
 
 	class FakeDocumentResource:
 		def create(self, request, option=None):
@@ -267,7 +274,6 @@ def test_create_summary_document_reports_error_via_notification(monkeypatch: pyt
 			title="Error Title",
 			app_id="app-id",
 			app_secret="app-secret",
-			tenant_access_token="token-456",
 			message_receiver_id="user-abc",
 		)
 
@@ -284,3 +290,134 @@ def test_create_summary_document_reports_error_via_notification(monkeypatch: pyt
 def test_create_summary_document_requires_non_empty_summary() -> None:
 	with pytest.raises(LarkDocError):
 		create_summary_document("   ", title="Title", app_id="app", app_secret="secret")
+
+
+def test_create_summary_document_uses_cached_tenant_token(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+	from video_asr_summary import lark_docs
+
+	cache_file = tmp_path / "tenant_token.json"
+	cache_file.write_text(json.dumps({"token": "cached-token", "updated_at": time.time()}))
+	monkeypatch.setenv("LARK_TENANT_TOKEN_CACHE_PATH", str(cache_file))
+
+	recorded: dict[str, object] = {}
+
+	class FakeDocumentResource:
+		def create(self, request, option=None):
+			return SimpleNamespace(
+				code=0,
+				msg="success",
+				data=SimpleNamespace(
+					document=SimpleNamespace(document_id="DocCache", revision_id=1, title=request.request_body.title)
+				),
+			)
+
+	class FakeBlockResource:
+		def create(self, request, option=None):
+			return SimpleNamespace(
+				code=0,
+				msg="success",
+				data=SimpleNamespace(children=[], document_revision_id=1, client_token="token"),
+			)
+
+	class FakeDocxV1:
+		def __init__(self):
+			self.document = FakeDocumentResource()
+			self.document_block_children = FakeBlockResource()
+
+	class FakeDocxService:
+		def __init__(self):
+			self.v1 = FakeDocxV1()
+
+	class FakeClient:
+		def __init__(self):
+			self.docx = FakeDocxService()
+
+	class FakeBuilder:
+		def build(self):
+			return FakeClient()
+
+	def fake_builder(app_id: str, app_secret: str, *, tenant_access_token=None, user_access_token=None, domain=None):
+		recorded["tenant"] = tenant_access_token
+		return FakeBuilder(), None
+
+	monkeypatch.setattr(lark_docs, "_ensure_client_builder", fake_builder)
+
+	result = create_summary_document("Content.", title="Token Title", app_id="app-id", app_secret="app-secret")
+
+	assert result["document_id"] == "DocCache"
+	assert recorded["tenant"] == "cached-token"
+
+
+def test_create_summary_document_refreshes_expired_tenant_token(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+	from video_asr_summary import lark_docs
+
+	cache_file = tmp_path / "tenant_token.json"
+	cache_file.write_text(json.dumps({"token": "old-token", "updated_at": time.time() - 7200 - 10}))
+	monkeypatch.setenv("LARK_TENANT_TOKEN_CACHE_PATH", str(cache_file))
+
+	post_calls: dict[str, object] = {}
+
+	def fake_post(url, headers=None, json=None, timeout=10):
+		post_calls["url"] = url
+		post_calls["payload"] = json
+		post_calls["called_at"] = time.time()
+		return SimpleNamespace(
+			status_code=200,
+			ok=True,
+			json=lambda: {"code": 0, "msg": "ok", "tenant_access_token": "new-token", "expire": 7200},
+		)
+
+	monkeypatch.setattr(lark_docs.requests, "post", fake_post)
+
+	recorded: dict[str, object] = {}
+
+	class FakeDocumentResource:
+		def create(self, request, option=None):
+			return SimpleNamespace(
+				code=0,
+				msg="success",
+				data=SimpleNamespace(
+					document=SimpleNamespace(document_id="DocRefreshed", revision_id=1, title=request.request_body.title)
+				),
+			)
+
+	class FakeBlockResource:
+		def create(self, request, option=None):
+			return SimpleNamespace(
+				code=0,
+				msg="success",
+				data=SimpleNamespace(children=[], document_revision_id=1, client_token="token"),
+			)
+
+	class FakeDocxV1:
+		def __init__(self):
+			self.document = FakeDocumentResource()
+			self.document_block_children = FakeBlockResource()
+
+	class FakeDocxService:
+		def __init__(self):
+			self.v1 = FakeDocxV1()
+
+	class FakeClient:
+		def __init__(self):
+			self.docx = FakeDocxService()
+
+	class FakeBuilder:
+		def build(self):
+			return FakeClient()
+
+	def fake_builder(app_id: str, app_secret: str, *, tenant_access_token=None, user_access_token=None, domain=None):
+		recorded["tenant"] = tenant_access_token
+		return FakeBuilder(), None
+
+	monkeypatch.setattr(lark_docs, "_ensure_client_builder", fake_builder)
+
+	result = create_summary_document("Content.", title="Refresh Title", app_id="app-id", app_secret="app-secret")
+
+	assert result["document_id"] == "DocRefreshed"
+	assert recorded["tenant"] == "new-token"
+	assert post_calls["url"].endswith("/tenant_access_token/internal")
+	assert post_calls["payload"] == {"app_id": "app-id", "app_secret": "app-secret"}
+	cache_payload = json.loads(cache_file.read_text())
+	assert cache_payload["token"] == "new-token"
+	assert cache_payload["updated_at"] >= post_calls["called_at"] - 1
