@@ -99,7 +99,7 @@ def test_pipeline_allows_overriding_summarizer_model(monkeypatch: pytest.MonkeyP
     captured: dict[str, str] = {}
 
     class StubSummarizer:
-        def __init__(self, *, model: str = "gpt-4o-mini") -> None:
+        def __init__(self, *, model: str = "gpt-5-mini") -> None:
             captured["model"] = model
 
         def summarize(self, *_args, **_kwargs) -> str:
@@ -220,6 +220,176 @@ def test_pipeline_uses_local_backend_when_requested(tmp_path: Path, monkeypatch:
     assert created["kwargs"] == {"model_path": "/models/qwen"}
     assert created["transcribe"] == (audio_path, "fr")
     fake_summarizer.summarize.assert_called_once_with("local transcript", language="fr")
+
+
+def test_pipeline_corrects_transcript_with_image_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from video_asr_summary import pipeline
+
+    audio_path = tmp_path / "audio.wav"
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+    frame_path = frame_dir / "frame_00001.jpg"
+    frame_path.write_bytes(b"image")
+
+    monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path)
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+
+    captured: dict[str, object] = {}
+
+    class StubLocalASR:
+        def transcribe(self, *_args, **_kwargs) -> str:
+            return "raw transcript"
+
+    class StubVisionClient:
+        def __init__(self) -> None:
+            self.calls: list[Path] = []
+
+        def describe_image(self, path: Path, *, language: str) -> str:
+            self.calls.append(path)
+            return f"Text on {path.name}: Launch Day"
+
+    class StubCorrector:
+        def correct(self, transcript: str, *, image_context: list[str], language: str) -> str:
+            captured["transcript"] = transcript
+            captured["image_context"] = image_context
+            captured["language"] = language
+            return "corrected transcript"
+
+    class StubSummarizer:
+        def summarize(self, transcript: str, *, language: str) -> str:
+            captured["summarizer_input"] = transcript
+            captured["summarizer_language"] = language
+            return "# summary"
+
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.extract_video_frames",
+        lambda *args, **kwargs: [frame_path],
+    )
+
+    result = pipeline.process_video(
+        video_path=tmp_path / "input.mp4",
+        language="en",
+        asr_backend="local",
+        local_client=StubLocalASR(),
+        enable_image_context=True,
+        frame_interval_seconds=5,
+        frame_output_dir=frame_dir,
+        vision_client=StubVisionClient(),
+        transcript_corrector=StubCorrector(),
+        summarizer=StubSummarizer(),
+    )
+
+    assert result == {"transcript": "corrected transcript", "summary": "# summary"}
+    assert captured["transcript"] == "raw transcript"
+    assert captured["summarizer_input"] == "corrected transcript"
+    assert frame_dir.joinpath("frame_00001.txt").read_text() == "Text on frame_00001.jpg: Launch Day"
+    assert captured["image_context"] == ["Text on frame_00001.jpg: Launch Day"]
+
+
+def test_pipeline_skips_image_context_for_remote_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from video_asr_summary import pipeline
+
+    audio_path = tmp_path / "audio.wav"
+    monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path)
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+
+    fake_asr = MagicMock()
+    fake_asr.transcribe.return_value = "remote transcript"
+
+    fake_summarizer = MagicMock()
+    fake_summarizer.summarize.return_value = "# sum"
+
+    def fail_extract(*_args, **_kwargs):
+        raise AssertionError("frame extraction should not run")
+
+    monkeypatch.setattr("video_asr_summary.pipeline.extract_video_frames", fail_extract)
+
+    result = pipeline.process_video(
+        video_path=tmp_path / "clip.mp4",
+        enable_image_context=True,
+        bailian_client=fake_asr,
+        summarizer=fake_summarizer,
+    )
+
+    assert result["transcript"] == "remote transcript"
+    fake_summarizer.summarize.assert_called_once_with("remote transcript", language="en")
+
+
+def test_pipeline_reuses_local_asr_runtime_for_vision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from video_asr_summary import pipeline
+    from video_asr_summary.asr_client import LocalQwenASRClient
+
+    audio_path = tmp_path / "audio.wav"
+    frame_path = tmp_path / "frame_00001.jpg"
+    frame_path.write_bytes(b"image")
+
+    monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path)
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.extract_video_frames",
+        lambda *args, **kwargs: [frame_path],
+    )
+
+    captured_vision_kwargs: dict[str, object] = {}
+
+    class RecordingVisionClient:
+        def __init__(self, **kwargs) -> None:
+            captured_vision_kwargs.update(kwargs)
+
+        def describe_image(self, *_args, **_kwargs) -> str:
+            return "desc"
+
+    monkeypatch.setattr("video_asr_summary.pipeline.LocalQwenVisionClient", RecordingVisionClient)
+
+    class StubLocalQwen(LocalQwenASRClient):
+        def __init__(self) -> None:
+            self.model_path = "stub-model"
+
+        def transcribe(self, *_args, **_kwargs) -> str:
+            return "raw"
+
+        def export_runtime_components(self) -> dict[str, object]:
+            return {
+                "llm": "llm",
+                "processor": "processor",
+                "sampling_params": "sampling",
+                "process_mm_info": lambda *args, **kwargs: (None, None, None),
+            }
+
+        @property
+        def model_path_str(self) -> str:  # type: ignore[override]
+            return self.model_path
+
+    class StubCorrector:
+        def correct(self, *_args, **_kwargs) -> str:
+            return "corrected"
+
+    class StubSummarizer:
+        def summarize(self, *_args, **_kwargs) -> str:
+            return "# summary"
+
+    result = pipeline.process_video(
+        video_path=tmp_path / "clip.mp4",
+        asr_backend="local",
+        local_client=StubLocalQwen(),
+        enable_image_context=True,
+        transcript_corrector=StubCorrector(),
+        summarizer=StubSummarizer(),
+    )
+
+    assert result == {"transcript": "corrected", "summary": "# summary"}
+    assert captured_vision_kwargs["llm"] == "llm"
+    assert captured_vision_kwargs["processor"] == "processor"
+    assert captured_vision_kwargs["sampling_params"] == "sampling"
 
 
 def test_pipeline_raises_for_unknown_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

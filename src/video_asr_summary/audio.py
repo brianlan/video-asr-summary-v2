@@ -71,6 +71,48 @@ def extract_audio(
     return target
 
 
+def extract_video_frames(
+    input_video: Path | str,
+    *,
+    interval_seconds: float = 5.0,
+    output_dir: Path | str | None = None,
+    image_format: str = "jpg",
+    frame_prefix: str = "frame",
+) -> list[Path]:
+    """Extract JPEG frames every ``interval_seconds`` seconds using ffmpeg.
+
+    Returns a list of extracted frame paths sorted in ascending order.
+    """
+
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be positive")
+
+    source = Path(input_video)
+    target_dir = Path(output_dir) if output_dir is not None else source.parent
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    pattern = target_dir / f"{frame_prefix}_%05d.{image_format}"
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(source),
+        "-vf",
+        f"fps=1/{interval_seconds}",
+        "-qscale:v",
+        "2",
+        str(pattern),
+    ]
+
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as exc:  # pragma: no cover - handled via tests
+        raise RuntimeError("Failed to extract video frames with ffmpeg") from exc
+
+    frame_paths = sorted(target_dir.glob(f"{frame_prefix}_*.{image_format}"))
+    return frame_paths
+
+
 def split_audio_on_silence(
     audio_path: Path | str,
     *,

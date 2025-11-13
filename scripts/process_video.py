@@ -124,6 +124,13 @@ def parse_args() -> argparse.Namespace:
 		help="Enable using the audio track when processing video chunks in the local backend",
 	)
 	parser.add_argument(
+		"--enable-image-context",
+		action=argparse.BooleanOptionalAction,
+		dest="enable_image_context",
+		default=True,
+		help="Enable using image context to correct the transcript",
+    )
+	parser.add_argument(
 		"--summary-only",
 		dest="summary_only",
 		action="store_true",
@@ -161,6 +168,11 @@ def parse_args() -> argparse.Namespace:
 		help="Override the Lark user subdomain (defaults to LARK_USER_SUBDOMAIN env var)",
 	)
 	parser.add_argument(
+		"--debug",
+		action="store_true",
+		help="Enable verbose pipeline debugging output",
+	)
+	parser.add_argument(
 		"--lark-api-domain",
 		dest="lark_api_domain",
 		help="Override the Lark OpenAPI domain (defaults to LARK_API_DOMAIN env var or SDK default)",
@@ -174,7 +186,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--summarizer-model",
 		dest="summarizer_model",
-		default="gpt-4o-mini",
+		default="gpt-5-mini",
 		help="Override the model used for summarization (defaults to SUMMARIZER_MODEL env var or SDK default)",
 	)
 	return parser.parse_args()
@@ -244,6 +256,8 @@ def main() -> None:
 				asr_backend=args.asr_backend,
 				local_asr_options=local_asr_options,
 				summarizer_model=args.summarizer_model,
+				enable_image_context=args.enable_image_context,
+				debug=args.debug,
 			)
 	else:
 		video_path = Path(video_input)
@@ -259,6 +273,8 @@ def main() -> None:
 			asr_backend=args.asr_backend,
 			local_asr_options=local_asr_options,
 			summarizer_model=args.summarizer_model,
+			enable_image_context=args.enable_image_context,
+			debug=args.debug,
 		)
 
 	summary_text = result.get("summary")

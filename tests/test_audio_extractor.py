@@ -8,6 +8,8 @@ import pytest
 from pydub import AudioSegment
 from pydub.generators import Sine
 
+from video_asr_summary.audio import extract_audio, extract_video_frames
+
 
 @pytest.fixture
 def sample_video(tmp_path: Path) -> Path:
@@ -17,8 +19,6 @@ def sample_video(tmp_path: Path) -> Path:
 
 
 def test_extract_audio_invokes_ffmpeg(sample_video: Path, tmp_path: Path) -> None:
-    from video_asr_summary.audio import extract_audio
-
     with patch("video_asr_summary.audio.subprocess.run") as mock_run:
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
         output_path = extract_audio(sample_video, output_path=tmp_path / "out.wav", sample_rate=16000)
@@ -59,6 +59,32 @@ def test_extract_audio_raises_when_ffmpeg_fails(sample_video: Path) -> None:
     with patch("video_asr_summary.audio.subprocess.run", side_effect=subprocess.CalledProcessError(1, "ffmpeg")):
         with pytest.raises(RuntimeError):
             extract_audio(sample_video)
+
+
+def test_extract_video_frames_invokes_ffmpeg(sample_video: Path, tmp_path: Path) -> None:
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+    expected_frame = frame_dir / "frame_00001.jpg"
+    expected_frame.write_bytes(b"image-bytes")
+
+    with patch("video_asr_summary.audio.subprocess.run") as mock_run:
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        frames = extract_video_frames(
+            sample_video,
+            output_dir=frame_dir,
+            interval_seconds=2.5,
+        )
+
+    assert frames == [expected_frame]
+    called_args = mock_run.call_args[0][0]
+    assert called_args[0] == "ffmpeg"
+    assert "fps=1/2.5" in called_args
+    assert called_args[-1].startswith(str(frame_dir))
+
+
+def test_extract_video_frames_validates_interval(sample_video: Path, tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        extract_video_frames(sample_video, output_dir=tmp_path, interval_seconds=0)
 
 
 def test_split_audio_on_silence_returns_original_when_short(tmp_path: Path) -> None:

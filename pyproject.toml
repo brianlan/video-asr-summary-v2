@@ -14,6 +14,7 @@ dependencies = [
     "pydub>=0.25",
     "yt-dlp>=2024.4.9",
     "lark-oapi>=1.4.23",
+    "json-repair>=0.19",
 ]
 
 [project.optional-dependencies]

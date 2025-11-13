@@ -173,6 +173,20 @@ class LocalQwenASRClient:
         self.extra_llm_kwargs = extra_llm_kwargs or {}
         self.extra_sampling_kwargs = extra_sampling_kwargs or {}
 
+    @property
+    def model_path_str(self) -> str:
+        return self.model_path
+
+    def export_runtime_components(self) -> dict[str, Any]:
+        """Expose instantiated vLLM components for reuse (e.g., vision client)."""
+
+        return {
+            "llm": self._ensure_llm(),
+            "processor": self._ensure_processor(),
+            "sampling_params": self._ensure_sampling_params(),
+            "process_mm_info": self._process_mm_messages(),
+        }
+
     def transcribe(
         self,
         audio_path: Path | str,
@@ -234,6 +248,7 @@ class LocalQwenASRClient:
             raise RuntimeError("Local ASR response payload is malformed") from exc
 
         return str(text).strip()
+
 
     def _ensure_llm(self) -> Any:
         if self._llm is None:
@@ -317,3 +332,21 @@ class LocalQwenASRClient:
 
         count = getattr(torch.cuda, "device_count", lambda: 0)()
         return count if count else 1
+
+
+class LocalQwenVisionClient(LocalQwenASRClient):
+    """Thin wrapper around the ASR client to generate image descriptions."""
+
+    def __init__(
+        self,
+        *,
+        model_path: str | Path | None = None,
+        prompt_template: str = (
+            "Extract all the text on the image, including subtitles, and any visible text. Only output the extracted text, and no other descriptions."
+        ),
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(model_path=model_path, prompt_template=prompt_template, **kwargs)
+
+    def describe_image(self, image_path: Path | str, *, language: str = "en") -> str:
+        return super().transcribe(image_path, language=language, media_type="image")
