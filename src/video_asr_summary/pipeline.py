@@ -74,12 +74,22 @@ def process_video(
         if summarizer_model is not None:
             summarizer_kwargs["model"] = summarizer_model
         llm = ChataiSummarizer(**summarizer_kwargs)
-    summary = llm.summarize(transcript, language=language)
+    summary: str | None
+    summarizer_error: str | None = None
+    try:
+        summary = llm.summarize(transcript, language=language)
+    except Exception as exc:  # noqa: BLE001 - we must preserve the transcript on any failure
+        summary = None
+        summarizer_error = str(exc) or exc.__class__.__name__
 
     if cleanup:
         audio_path.unlink(missing_ok=True)
 
-    return {
+    result: dict[str, Any] = {
         "transcript": transcript,
         "summary": summary,
     }
+    if summarizer_error is not None:
+        result["summarizer_error"] = summarizer_error
+
+    return result

@@ -262,31 +262,43 @@ def main() -> None:
 		)
 
 	summary_text = result.get("summary")
+	summarizer_error = result.get("summarizer_error")
+	if summarizer_error:
+		print(f"Summarizer error encountered: {summarizer_error}")
 	lark_doc = None
 
 	if args.publish_to_lark:
 		if summary_text is None or not str(summary_text).strip():
-			raise RuntimeError("No summary content generated; cannot publish to Lark.")
-		doc_title = derive_lark_title(summary_text, default_title_from_video(video_input))
-		try:
-			lark_doc = create_summary_document(
-				summary_text,
-				title=doc_title,
-				folder_token=args.lark_folder_token,
-				app_id=args.lark_app_id,
-				app_secret=args.lark_app_secret,
-				user_access_token=args.lark_user_access_token,
-				user_subdomain=args.lark_user_subdomain,
-				api_domain=args.lark_api_domain,
-				message_receiver_id=args.message_receiver_id,
-			)
-			result["lark_document"] = lark_doc
-			print(f"Lark document created: {lark_doc['url']}")
-		except LarkDocError as exc:
-			raise RuntimeError(str(exc)) from exc
+			print("No summary content generated; skipping Lark publishing.")
+		else:
+			doc_title = derive_lark_title(summary_text, default_title_from_video(video_input))
+			try:
+				lark_doc = create_summary_document(
+					summary_text,
+					title=doc_title,
+					folder_token=args.lark_folder_token,
+					app_id=args.lark_app_id,
+					app_secret=args.lark_app_secret,
+					user_access_token=args.lark_user_access_token,
+					user_subdomain=args.lark_user_subdomain,
+					api_domain=args.lark_api_domain,
+					message_receiver_id=args.message_receiver_id,
+				)
+				result["lark_document"] = lark_doc
+				print(f"Lark document created: {lark_doc['url']}")
+			except LarkDocError as exc:
+				result["lark_error"] = str(exc)
+				print(f"Lark publishing failed: {exc}")
 
 	if args.summary_only:
-		print(summary_text if summary_text is not None else result)
+		if summary_text is not None and str(summary_text).strip():
+			print(summary_text)
+		else:
+			transcript_text = result.get("transcript")
+			if transcript_text:
+				print(transcript_text)
+			else:
+				print(result)
 	else:
 		print(result)
 

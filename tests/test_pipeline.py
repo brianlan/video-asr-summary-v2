@@ -153,6 +153,36 @@ def test_pipeline_transcribes_multiple_chunks(tmp_path: Path, monkeypatch: pytes
     fake_summarizer.summarize.assert_called_once_with("first\n\nsecond", language="zh")
 
 
+def test_pipeline_returns_transcript_when_summarizer_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from video_asr_summary import pipeline
+
+    audio_path = tmp_path / "audio.wav"
+    monkeypatch.setattr("video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path)
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+
+    fake_asr = MagicMock()
+    fake_asr.transcribe.return_value = "fully transcribed"
+
+    class ExplodingSummarizer:
+        def summarize(self, *_args, **_kwargs):
+            raise RuntimeError("network unavailable")
+
+    result = pipeline.process_video(
+        video_path=tmp_path / "broken.mp4",
+        bailian_client=fake_asr,
+        summarizer=ExplodingSummarizer(),
+    )
+
+    assert result["transcript"] == "fully transcribed"
+    assert result["summary"] is None
+    assert result["summarizer_error"] == "network unavailable"
+
+
 def test_pipeline_uses_local_backend_when_requested(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from video_asr_summary import pipeline
 
@@ -224,3 +254,42 @@ def test_process_video_cli_exposes_message_receiver_id(monkeypatch: pytest.Monke
         ["process_video", "sample.mp4", "--message-receiver-id", "custom-user"]
     )
     assert args_custom.message_receiver_id == "custom-user"
+
+
+def test_process_video_cli_prints_transcript_when_lark_publish_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script_path = Path(__file__).resolve().parent.parent / "scripts" / "process_video.py"
+    spec = importlib.util.spec_from_file_location("process_video_cli", script_path)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)  # type: ignore[assignment]
+
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_text("video")
+
+    monkeypatch.setattr(cli, "process_video", lambda *args, **kwargs: {
+        "transcript": "ASR transcript",
+        "summary": "# summary",
+    })
+
+    def always_fail(*_args, **_kwargs):
+        raise cli.LarkDocError("lark network rejected request")
+
+    monkeypatch.setattr(cli, "create_summary_document", always_fail)
+
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        [
+            "process_video",
+            str(video_file),
+            "--publish-to-lark",
+        ],
+    )
+
+    cli.main()
+
+    captured = capsys.readouterr()
+    assert "ASR transcript" in captured.out
+    assert "lark network rejected request" in captured.out
