@@ -127,8 +127,15 @@ def parse_args() -> argparse.Namespace:
 		"--enable-image-context",
 		action=argparse.BooleanOptionalAction,
 		dest="enable_image_context",
-		default=True,
+		default=False,
 		help="Enable using image context to correct the transcript",
+    )
+	parser.add_argument(
+		"--image-context-frame-interval-seconds",
+		dest="image_context_frame_interval_seconds",
+		type=float,
+		default=5.0,
+		help="Interval in seconds between extracted video frames for image context",
     )
 	parser.add_argument(
 		"--summary-only",
@@ -253,6 +260,7 @@ def main() -> None:
 				audio_sample_rate=args.audio_sample_rate,
 				audio_bitrate=args.audio_bitrate,
 				max_segment_duration=args.max_segment_duration,
+				frame_interval_seconds=args.image_context_frame_interval_seconds,
 				asr_backend=args.asr_backend,
 				local_asr_options=local_asr_options,
 				summarizer_model=args.summarizer_model,
@@ -270,6 +278,7 @@ def main() -> None:
 			audio_sample_rate=args.audio_sample_rate,
 			audio_bitrate=args.audio_bitrate,
 			max_segment_duration=args.max_segment_duration,
+			frame_interval_seconds=args.image_context_frame_interval_seconds,
 			asr_backend=args.asr_backend,
 			local_asr_options=local_asr_options,
 			summarizer_model=args.summarizer_model,

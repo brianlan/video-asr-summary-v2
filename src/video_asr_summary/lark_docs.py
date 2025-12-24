@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -89,7 +90,7 @@ def _request_tenant_access_token(app_id: str, app_secret: str) -> tuple[str, flo
 
 	if data.get("code") != 0 or not data.get("tenant_access_token"):
 		message = data.get("msg") or "unknown error"
-		raise LarkDocError(f"Failed to obtain tenant access token: {message}")
+		raise LarkDocError(f"Failed to obtain tenant access token (code={data.get('code')}): {message}")
 
 	return data["tenant_access_token"], time.time()
 
@@ -99,12 +100,24 @@ def _resolve_tenant_access_token(
 	app_secret: str,
 	tenant_access_token: str | None,
 ) -> str | None:
-	if tenant_access_token:
-		return tenant_access_token
-
 	cache_path = _tenant_token_cache_path()
 	now = time.time()
 
+	# If a token was explicitly provided, check if it's still valid
+	if tenant_access_token:
+		# Try to load cached token info to check expiration
+		cached = _load_cached_tenant_token(cache_path)
+		if cached:
+			cached_token, updated_at = cached
+			# If the cached token matches the provided token and is still valid, use it
+			if cached_token == tenant_access_token and (now - updated_at < _TOKEN_REFRESH_INTERVAL):
+				return tenant_access_token
+		# Either token not in cache, mismatched, or expired - get a fresh one
+		token, updated_at = _request_tenant_access_token(app_id, app_secret)
+		_store_cached_tenant_token(cache_path, token, updated_at)
+		return token
+
+	# No token provided, use cache or request new one
 	cached = _load_cached_tenant_token(cache_path)
 	if cached:
 		token, updated_at = cached
@@ -445,7 +458,27 @@ def create_summary_document(
 		attempted = True
 		create_resp = client.docx.v1.document.create(create_req, request_option)
 		if create_resp.code != 0 or not create_resp.data or not create_resp.data.document:
-			raise LarkDocError(f"Failed to create Lark document: {create_resp.msg}")
+			# If user access token failed and we have app credentials, try with tenant token as fallback
+			if user_access_token and not provided_tenant_access_token and tenant_access_token:
+				print(f"[DEBUG] User token failed (code={create_resp.code}, msg={create_resp.msg}), retrying with tenant token", file=sys.stderr)
+				builder_fallback, request_option_fallback = _ensure_client_builder(
+					app_id,
+					app_secret,
+					tenant_access_token=tenant_access_token,
+					user_access_token=None,  # Don't use user token this time
+					domain=api_domain,
+				)
+				client_fallback = builder_fallback.build()
+				create_resp = client_fallback.docx.v1.document.create(create_req, request_option_fallback)
+				if create_resp.code != 0 or not create_resp.data or not create_resp.data.document:
+					raise LarkDocError(f"Failed to create Lark document (tenant token fallback also failed): {create_resp.msg}")
+				else:
+					print(f"[DEBUG] Tenant token fallback succeeded", file=sys.stderr)
+					# Update client and request_option for subsequent operations
+					client = client_fallback
+					request_option = request_option_fallback
+			else:
+				raise LarkDocError(f"Failed to create Lark document: {create_resp.msg}")
 
 		document = create_resp.data.document
 		document_id = document.document_id
