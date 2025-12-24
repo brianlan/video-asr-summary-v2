@@ -126,7 +126,11 @@ class TranscriptCorrector:
 
         instructions = (
             "You refine noisy ASR transcripts using additional observations captured from video frames. "
-            "Fix spelling, abbreviations, people's names, place names, and favor the terminology suggested by the image context."
+            "Focus on correcting factual errors: fix spelling of names, places, technical terms, and abbreviations. "
+            "Use the image context to resolve ambiguous references. "
+            "Do NOT rewrite the speaker's voice, conversational style, or personality. "
+            "Preserve all demonstrations, real-time reactions, specific examples, and personal anecdotes. "
+            "No need to make the corrected transcript too formal."
         )
         # if language:
         #     instructions += f" Respond in {language}."
