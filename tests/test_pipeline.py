@@ -28,6 +28,10 @@ def test_pipeline_runs_end_to_end(
         "video_asr_summary.pipeline.split_audio_on_silence",
         lambda *args, **kwargs: [audio_path],
     )
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.extract_video_frames",
+        lambda *args, **kwargs: [],
+    )
 
     fake_asr = MagicMock()
     fake_asr.transcribe.return_value = "transcribed text"
@@ -44,6 +48,7 @@ def test_pipeline_runs_end_to_end(
 
     assert result == {
         "transcript": "transcribed text",
+        "corrected_transcript": None,
         "summary": "# Summary\n\n- short",
     }
     mock_extract.assert_called_once_with(
@@ -96,7 +101,11 @@ def test_pipeline_uses_default_clients(
     result = pipeline.process_video(video_path=tmp_path / "input.mp4")
 
     assert created_clients == {"asr": True, "summarizer": True}
-    assert result == {"transcript": "text", "summary": "# Value"}
+    assert result == {
+        "transcript": "text",
+        "corrected_transcript": None,
+        "summary": "# Value",
+    }
 
 
 def test_pipeline_allows_overriding_structured_summarizer_model(
@@ -137,7 +146,11 @@ def test_pipeline_allows_overriding_structured_summarizer_model(
     )
 
     assert captured["model"] == "gpt-custom"
-    assert result == {"transcript": "full transcript", "summary": "# stub summary"}
+    assert result == {
+        "transcript": "full transcript",
+        "corrected_transcript": None,
+        "summary": "# stub summary",
+    }
 
 
 def test_pipeline_transcribes_multiple_chunks(
@@ -256,7 +269,11 @@ def test_pipeline_integration_asr_ocr_structured_summarizer_happy_path(
         summarizer=StubSummarizer(),
     )
 
-    assert result == {"transcript": "first part\n\nsecond part", "summary": "# summary"}
+    assert result == {
+        "transcript": "first part\n\nsecond part",
+        "corrected_transcript": None,
+        "summary": "# summary",
+    }
     assert asr_calls == [(chunks[0], "ja"), (chunks[1], "ja")]
     assert ocr_calls == [(frame_paths[0], "ja"), (frame_paths[1], "ja")]
     assert frames[0].ocr_text == "ocr:frame_00001.jpg"
@@ -319,7 +336,11 @@ def test_pipeline_integration_ocr_failure_skips_failed_frame(
         summarizer=fake_summarizer,
     )
 
-    assert result == {"transcript": "raw transcript", "summary": "# summary"}
+    assert result == {
+        "transcript": "raw transcript",
+        "corrected_transcript": None,
+        "summary": "# summary",
+    }
     assert frame.ocr_text == ""
     fake_summarizer.summarize.assert_called_once_with(
         "raw transcript", [], language="en"
@@ -442,7 +463,11 @@ def test_pipeline_uses_asr_client_with_options(
         summarizer=fake_summarizer,
     )
 
-    assert result == {"transcript": "local transcript", "summary": "# done"}
+    assert result == {
+        "transcript": "local transcript",
+        "corrected_transcript": None,
+        "summary": "# done",
+    }
     assert created["kwargs"] == {"model": "asr-model"}
     assert created["transcribe"] == (audio_path, "fr")
     fake_summarizer.summarize.assert_called_once_with(
@@ -516,7 +541,11 @@ def test_pipeline_populates_frame_ocr_text_for_structured_summarizer(
         summarizer=StubSummarizer(),
     )
 
-    assert result == {"transcript": "raw transcript", "summary": "# summary"}
+    assert result == {
+        "transcript": "raw transcript",
+        "corrected_transcript": None,
+        "summary": "# summary",
+    }
     assert captured["transcript"] == "raw transcript"
     assert captured["summarizer_input"] == "raw transcript"
     assert captured["frame_contexts"] == [frame]
@@ -585,8 +614,212 @@ def test_pipeline_uses_ocr_client_options_when_provided(
         summarizer=StubSummarizer(),
     )
 
-    assert result == {"transcript": "raw transcript", "summary": "# summary"}
+    assert result == {
+        "transcript": "raw transcript",
+        "corrected_transcript": None,
+        "summary": "# summary",
+    }
     assert captured_ocr_kwargs.get("model") == "custom-ocr-model"
+
+
+def test_pipeline_transcript_correction_disabled_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = _load_pipeline_module()
+
+    audio_path = tmp_path / "audio.wav"
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path
+    )
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+
+    fake_asr = MagicMock()
+    fake_asr.transcribe.return_value = "raw transcript"
+    fake_summarizer = MagicMock()
+    fake_summarizer.summarize.return_value = "# summary"
+    fake_corrector = MagicMock()
+    fake_corrector.correct.return_value = "corrected transcript"
+
+    result = pipeline.process_video(
+        video_path=tmp_path / "input.mp4",
+        asr_client=fake_asr,
+        summarizer=fake_summarizer,
+        transcript_corrector=fake_corrector,
+    )
+
+    assert result == {
+        "transcript": "raw transcript",
+        "corrected_transcript": None,
+        "summary": "# summary",
+    }
+    fake_corrector.correct.assert_not_called()
+    fake_summarizer.summarize.assert_called_once_with(
+        "raw transcript", [], language="en"
+    )
+
+
+def test_pipeline_transcript_correction_uses_time_ordered_ocr_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = _load_pipeline_module()
+
+    video_path = tmp_path / "video.mp4"
+    audio_path = tmp_path / "audio.mp3"
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+    frame_paths = [
+        frame_dir / "frame_00003.jpg",
+        frame_dir / "frame_00001.jpg",
+        frame_dir / "frame_00002.jpg",
+    ]
+    for frame_path in frame_paths:
+        frame_path.write_bytes(b"img")
+
+    frames = [
+        SimpleNamespace(
+            timestamp_start=10.0,
+            timestamp_end=15.0,
+            frame_path=frame_paths[0],
+            ocr_text="",
+        ),
+        SimpleNamespace(
+            timestamp_start=0.0,
+            timestamp_end=5.0,
+            frame_path=frame_paths[1],
+            ocr_text="",
+        ),
+        SimpleNamespace(
+            timestamp_start=5.0,
+            timestamp_end=10.0,
+            frame_path=frame_paths[2],
+            ocr_text="",
+        ),
+    ]
+
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path
+    )
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.extract_video_frames",
+        lambda *args, **kwargs: frames,
+    )
+
+    class StubASR:
+        def transcribe(self, *_args, **_kwargs) -> str:
+            return "raw transcript"
+
+    class StubOCR:
+        def describe_image(self, path: Path, *, language: str) -> str:
+            mapping = {
+                frame_paths[0]: "  third line  ",
+                frame_paths[1]: "first line",
+                frame_paths[2]: "   ",
+            }
+            return mapping[path]
+
+    captured: dict[str, object] = {}
+
+    class StubCorrector:
+        def correct(
+            self,
+            transcript: str,
+            *,
+            image_context: list[str] | None = None,
+            language: str | None = None,
+        ) -> str:
+            captured["corrector_transcript"] = transcript
+            captured["corrector_image_context"] = image_context
+            captured["corrector_language"] = language
+            return "corrected transcript"
+
+    class StubSummarizer:
+        def summarize(
+            self, transcript: str, frame_contexts: list[object], *, language: str
+        ) -> str:
+            captured["summarizer_transcript"] = transcript
+            captured["summarizer_frame_contexts"] = frame_contexts
+            captured["summarizer_language"] = language
+            return "# summary"
+
+    result = pipeline.process_video(
+        video_path=video_path,
+        language="ja",
+        asr_client=StubASR(),
+        enable_image_context=True,
+        frame_output_dir=frame_dir,
+        ocr_client=StubOCR(),
+        transcript_corrector=StubCorrector(),
+        enable_transcript_correction=True,
+        summarizer=StubSummarizer(),
+    )
+
+    assert result == {
+        "transcript": "raw transcript",
+        "corrected_transcript": "corrected transcript",
+        "summary": "# summary",
+    }
+    assert captured["corrector_transcript"] == "raw transcript"
+    assert captured["corrector_language"] == "ja"
+    assert captured["corrector_image_context"] == [
+        "[00:00-00:05] first line",
+        "[00:10-00:15] third line",
+    ]
+    assert captured["summarizer_transcript"] == "raw transcript"
+    assert captured["summarizer_frame_contexts"] == frames
+    assert captured["summarizer_language"] == "ja"
+
+
+def test_pipeline_returns_summary_when_transcript_correction_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = _load_pipeline_module()
+
+    audio_path = tmp_path / "audio.wav"
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.extract_audio", lambda *args, **kwargs: audio_path
+    )
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.split_audio_on_silence",
+        lambda *args, **kwargs: [audio_path],
+    )
+    monkeypatch.setattr(
+        "video_asr_summary.pipeline.extract_video_frames",
+        lambda *args, **kwargs: [],
+    )
+
+    fake_asr = MagicMock()
+    fake_asr.transcribe.return_value = "raw transcript"
+    fake_summarizer = MagicMock()
+    fake_summarizer.summarize.return_value = "# summary"
+
+    class ExplodingCorrector:
+        def correct(self, *_args, **_kwargs):
+            raise RuntimeError("correction backend unavailable")
+
+    result = pipeline.process_video(
+        video_path=tmp_path / "input.mp4",
+        asr_client=fake_asr,
+        transcript_corrector=ExplodingCorrector(),
+        enable_transcript_correction=True,
+        summarizer=fake_summarizer,
+    )
+
+    assert result == {
+        "transcript": "raw transcript",
+        "corrected_transcript": None,
+        "summary": "# summary",
+        "transcript_correction_error": "correction backend unavailable",
+    }
+    fake_summarizer.summarize.assert_called_once_with(
+        "raw transcript", [], language="en"
+    )
 
 
 def test_process_video_cli_exposes_message_receiver_id(
@@ -611,6 +844,35 @@ def test_process_video_cli_exposes_message_receiver_id(
         ["process_video", "sample.mp4", "--message-receiver-id", "custom-user"]
     )
     assert args_custom.message_receiver_id == "custom-user"
+
+
+def test_process_video_cli_exposes_transcript_correction_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = (
+        Path(__file__).resolve().parent.parent / "scripts" / "process_video.py"
+    )
+    spec = importlib.util.spec_from_file_location("process_video_cli", script_path)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)  # type: ignore[assignment]
+
+    def run_with_args(argv: list[str]) -> argparse.Namespace:
+        monkeypatch.setattr(cli.sys, "argv", argv)
+        return cli.parse_args()
+
+    args_default = run_with_args(["process_video", "sample.mp4"])
+    assert args_default.enable_transcript_correction is False
+
+    args_enabled = run_with_args(
+        ["process_video", "sample.mp4", "--enable-transcript-correction"]
+    )
+    assert args_enabled.enable_transcript_correction is True
+
+    args_disabled = run_with_args(
+        ["process_video", "sample.mp4", "--no-enable-transcript-correction"]
+    )
+    assert args_disabled.enable_transcript_correction is False
 
 
 def test_process_video_cli_load_env_file_sets_missing_values(
@@ -756,13 +1018,21 @@ def test_process_video_cli_main_loads_dotenv_for_asr_ocr_options(
     def fake_process_video(*args, **kwargs):
         captured["asr_options"] = kwargs["asr_options"]
         captured["ocr_options"] = kwargs["ocr_options"]
+        captured["enable_transcript_correction"] = kwargs[
+            "enable_transcript_correction"
+        ]
         return {"transcript": "ASR transcript", "summary": "# summary"}
 
     monkeypatch.setattr(cli, "process_video", fake_process_video)
     monkeypatch.setattr(
         cli.sys,
         "argv",
-        ["process_video", str(video_file), "--enable-image-context"],
+        [
+            "process_video",
+            str(video_file),
+            "--enable-image-context",
+            "--enable-transcript-correction",
+        ],
     )
 
     cli.main()
@@ -776,6 +1046,7 @@ def test_process_video_cli_main_loads_dotenv_for_asr_ocr_options(
         "base_url": "http://127.0.0.1:9001",
         "model": "dotenv-ocr",
     }
+    assert captured["enable_transcript_correction"] is True
 
 
 def test_process_video_cli_prints_transcript_when_lark_publish_fails(

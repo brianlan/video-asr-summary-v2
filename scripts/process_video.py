@@ -5,11 +5,12 @@ import sys
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any, cast
 from urllib.parse import unquote, urlparse
 
 import yt_dlp
-from video_asr_summary import process_video
-from video_asr_summary.lark_docs import (
+from video_asr_summary import process_video  # pyright: ignore[reportMissingImports]
+from video_asr_summary.lark_docs import (  # pyright: ignore[reportMissingImports]
     LarkDocError,
     create_summary_document,
     derive_lark_title,
@@ -109,6 +110,13 @@ def parse_args() -> argparse.Namespace:
         help="Enable using image context to correct the transcript",
     )
     parser.add_argument(
+        "--enable-transcript-correction",
+        action=argparse.BooleanOptionalAction,
+        dest="enable_transcript_correction",
+        default=False,
+        help="Enable LLM transcript correction using OCR frame context",
+    )
+    parser.add_argument(
         "--image-context-frame-interval-seconds",
         dest="image_context_frame_interval_seconds",
         type=float,
@@ -192,7 +200,7 @@ def default_title_from_video(video_input: str) -> str:
 
 
 def download_video(video_url: str, output_dir: Path) -> Path:
-    options = {
+    options: dict[str, Any] = {
         "outtmpl": str(output_dir / "%(title).200s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
@@ -202,7 +210,7 @@ def download_video(video_url: str, output_dir: Path) -> Path:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
         },
     }
-    with yt_dlp.YoutubeDL(options) as downloader:
+    with yt_dlp.YoutubeDL(cast(Any, options)) as downloader:
         info = downloader.extract_info(video_url, download=True)
         filepath = downloader.prepare_filename(info)
     return Path(filepath)
@@ -220,6 +228,7 @@ def main() -> None:
         "base_url": args.ocr_url,
         "model": args.ocr_model,
     }
+    use_ocr = args.enable_image_context or args.enable_transcript_correction
 
     video_input = args.video
     if is_url(video_input):
@@ -234,9 +243,10 @@ def main() -> None:
                 max_segment_duration=args.max_segment_duration,
                 frame_interval_seconds=args.image_context_frame_interval_seconds,
                 asr_options=asr_options,
-                ocr_options=ocr_options if args.enable_image_context else None,
+                ocr_options=ocr_options if use_ocr else None,
                 summarizer_model=args.summarizer_model,
                 enable_image_context=args.enable_image_context,
+                enable_transcript_correction=args.enable_transcript_correction,
                 debug=args.debug,
             )
     else:
@@ -252,9 +262,10 @@ def main() -> None:
             max_segment_duration=args.max_segment_duration,
             frame_interval_seconds=args.image_context_frame_interval_seconds,
             asr_options=asr_options,
-            ocr_options=ocr_options if args.enable_image_context else None,
+            ocr_options=ocr_options if use_ocr else None,
             summarizer_model=args.summarizer_model,
             enable_image_context=args.enable_image_context,
+            enable_transcript_correction=args.enable_transcript_correction,
             debug=args.debug,
         )
 
