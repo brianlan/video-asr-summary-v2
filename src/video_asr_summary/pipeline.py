@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from .asr_client import LocalASRClient, LocalOCRClient
 from .audio import extract_audio, extract_video_frames, split_audio_on_silence
-from .summarizer import ChataiSummarizer, TranscriptCorrector
+from .summarizer import StructuredSummarizer, TranscriptCorrector
 
 
 def process_video(
@@ -19,7 +19,7 @@ def process_video(
     max_segment_duration: float = 60.0,
     asr_client: Optional[LocalASRClient] = None,
     asr_options: Optional[dict[str, Any]] = None,
-    summarizer: Optional[ChataiSummarizer] = None,
+    summarizer: Optional[StructuredSummarizer] = None,
     summarizer_model: str | None = None,
     enable_image_context: bool = False,
     frame_interval_seconds: float = 5.0,
@@ -62,22 +62,16 @@ def process_video(
     if not transcript:
         transcript = ""
 
-    corrected_transcript = transcript
+    frame_contexts = []
 
-    if debug:
-        print("[debug] transcript-before-correction:\n", transcript)
-
-    if enable_image_context and transcript.strip():
-        corrected_transcript = _apply_image_context_corrections(
+    if enable_image_context:
+        frame_contexts = _collect_frame_contexts(
             video=video,
             language=language,
-            transcript=transcript,
             frame_interval_seconds=frame_interval_seconds,
             frame_output_dir=frame_output_dir,
             ocr_client=ocr_client,
             ocr_options=ocr_options,
-            transcript_corrector=transcript_corrector,
-            transcript_corrector_model=transcript_corrector_model,
             debug=debug,
         )
 
@@ -87,11 +81,11 @@ def process_video(
         summarizer_kwargs: dict[str, Any] = {}
         if summarizer_model is not None:
             summarizer_kwargs["model"] = summarizer_model
-        llm = ChataiSummarizer(**summarizer_kwargs)
+        llm = StructuredSummarizer(**summarizer_kwargs)
     summary: str | None
     summarizer_error: str | None = None
     try:
-        summary = llm.summarize(corrected_transcript, language=language)
+        summary = llm.summarize(transcript, frame_contexts, language=language)
     except Exception as exc:  # noqa: BLE001 - we must preserve the transcript on any failure
         summary = None
         summarizer_error = str(exc) or exc.__class__.__name__
@@ -100,7 +94,7 @@ def process_video(
         audio_path.unlink(missing_ok=True)
 
     result: dict[str, Any] = {
-        "transcript": corrected_transcript,
+        "transcript": transcript,
         "summary": summary,
     }
     if summarizer_error is not None:
@@ -109,19 +103,16 @@ def process_video(
     return result
 
 
-def _apply_image_context_corrections(
+def _collect_frame_contexts(
     *,
     video: Path,
     language: str,
-    transcript: str,
     frame_interval_seconds: float,
     frame_output_dir: Path | str | None,
     ocr_client: Optional[LocalOCRClient],
     ocr_options: Optional[dict[str, Any]],
-    transcript_corrector: Optional[TranscriptCorrector],
-    transcript_corrector_model: str | None,
     debug: bool,
-) -> str:
+) -> list[Any]:
     frame_tempdir: TemporaryDirectory[str] | None = None
     if frame_output_dir is None:
         frame_tempdir = TemporaryDirectory()
@@ -137,45 +128,27 @@ def _apply_image_context_corrections(
             output_dir=frames_dir,
         )
         if not frames:
-            return transcript
+            return []
 
         ocr = ocr_client
         if ocr is None:
             options = ocr_options or {}
             ocr = LocalOCRClient(**options)
 
-        description_files: list[Path] = []
+        enriched_frames: list[Any] = []
         for frame in frames:
-            description = ocr.describe_image(frame, language=language)
-            text_path = frame.with_suffix(".txt")
-            text_path.write_text(description)
-            description_files.append(text_path)
-
-        image_context: list[str] = []
-        for text_file in description_files:
+            frame_path = frame.frame_path
             try:
-                saved = text_file.read_text().strip()
-            except OSError:
+                frame.ocr_text = ocr.describe_image(
+                    frame_path, language=language
+                ).strip()
+            except Exception as exc:  # noqa: BLE001 - one frame failure should not fail whole run
+                if debug:
+                    print(f"[debug] skipped frame OCR failure: {frame_path}: {exc}")
                 continue
-            if saved:
-                image_context.append(saved)
+            enriched_frames.append(frame)
 
-        if not image_context:
-            return transcript
-
-        corrector = transcript_corrector
-        if corrector is None:
-            corrector_kwargs: dict[str, Any] = {}
-            if transcript_corrector_model is not None:
-                corrector_kwargs["model"] = transcript_corrector_model
-            corrector = TranscriptCorrector(**corrector_kwargs)
-
-        corrected = corrector.correct(
-            transcript, image_context=image_context, language=language
-        )
-        if debug:
-            print("[debug] transcript-after-correction:\n", corrected)
-        return corrected
+        return enriched_frames
     finally:
         if frame_tempdir is not None:
             frame_tempdir.cleanup()
