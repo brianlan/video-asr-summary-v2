@@ -1,352 +1,306 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
-
-try:  # pragma: no cover - allow tests to run when dashscope is unavailable
-    from dashscope import MultiModalConversation
-except ImportError:  # pragma: no cover - tests provide a stub via monkeypatch
-    class MultiModalConversation:  # type: ignore[override]
-        @staticmethod
-        def call(*_args: Any, **_kwargs: Any) -> Any:
-            raise RuntimeError("dashscope.MultiModalConversation is required for BailianASRClient")
+from typing import Any
+import time
+import requests
 
 
-class BailianASRClient:
-    """Client for the Alibaba Bailian ASR service using MultiModalConversation."""
+class LocalASRClient:
+    """Client for local ASR service via HTTP API."""
 
     def __init__(
         self,
         *,
-        api_key: str | None = None,
-        model: str = "qwen3-asr-flash",
+        base_url: str = "http://127.0.0.1:8002",
+        model: str = "whisper",
         timeout: int = 300,
-        system_prompt: str = "",
-        default_asr_options: dict[str, Any] | None = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
     ) -> None:
-        resolved_api_key = api_key or os.getenv("BAILIAN_API_KEY")
-        if not resolved_api_key:
-            raise RuntimeError("BAILIAN_API_KEY is not set")
-        self.api_key: str = str(resolved_api_key)
-
+        self.base_url = base_url
         self.model = model
         self.timeout = timeout
-        self.system_prompt = system_prompt
-        self.default_asr_options = default_asr_options or {
-            "enable_lid": True,
-            "enable_itn": False,
-        }
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
 
-    def transcribe(
-        self,
-        audio_path: Path | str,
-        *,
-        language: str = "en",
-        context: str | None = None,
-    ) -> str:
-        path = Path(audio_path).resolve()
+    def transcribe(self, audio_path: Path | str, *, language: str = "en") -> str:
+        """Transcribe audio file using local ASR service.
 
-        system_text = context if context is not None else self.system_prompt
+        Args:
+            audio_path: Path to the audio file to transcribe
+            language: Language code (e.g., 'en', 'zh')
 
-        messages = [
-            {
-                "role": "system",
-                "content": [{"text": system_text}],
-            },
-            {
-                "role": "user",
-                "content": [{"audio": str(path)}],
-            },
-        ]
+        Returns:
+            Transcribed text from the ASR service
 
-        asr_options: dict[str, Any] = {**self.default_asr_options}
-        if language:
-            asr_options["language"] = language
-
-        try:
-            response = MultiModalConversation.call(
-                model=self.model,
-                api_key=self.api_key,
-                messages=messages,
-                result_format="message",
-                asr_options=asr_options,
-                timeout=self.timeout,
-            )
-        except Exception as exc:  # pragma: no cover - raised via tests
-            raise RuntimeError("Bailian ASR request failed") from exc
-
-        error_code = self._get_attr_or_key(response, "code")
-        if isinstance(error_code, str) and error_code.strip():
-            error_message = self._get_attr_or_key(response, "message") or ""
-            raise RuntimeError(
-                f"Bailian ASR error: {error_code}: {error_message}"
-            )
-
-        transcript = self._extract_transcript(response)
-        if transcript is None:
-            raise RuntimeError("Unexpected Bailian ASR response payload")
-
-        return transcript
-
-    @staticmethod
-    def _get_attr_or_key(obj: Any, key: str) -> Any:
-        if obj is None:
-            return None
-        if isinstance(obj, dict):
-            return obj.get(key)
-        return getattr(obj, key, None)
-
-    @staticmethod
-    def _extract_transcript(response: Any) -> str | None:
-        output = BailianASRClient._get_attr_or_key(response, "output")
-        if output is None:
-            return None
-
-        choices = BailianASRClient._get_attr_or_key(output, "choices")
-        if not choices:
-            return None
-
-        first_choice = choices[0]
-        message = BailianASRClient._get_attr_or_key(first_choice, "message")
-        if not message:
-            return None
-
-        content = BailianASRClient._get_attr_or_key(message, "content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, Iterable):
-            for element in content:
-                text_value = BailianASRClient._get_attr_or_key(element, "text")
-                if isinstance(text_value, str):
-                    return text_value
-        return None
-
-
-class LocalQwenASRClient:
-    """Client that runs Qwen Omni ASR locally via vLLM."""
-
-    DEFAULT_MODEL_PATH = "/ssd4/models/cpatonn-mirror/Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit"
-
-    def __init__(
-        self,
-        *,
-        model_path: str | Path | None = None,
-        prompt_template: str = "Please output the ASR result of the audio.",
-        temperature: float = 0.6,
-        top_p: float = 0.95,
-        top_k: int = 20,
-        max_tokens: int = 16384,
-        max_model_len: int = 32768,
-        max_num_seqs: int = 8,
-        gpu_memory_utilization: float = 0.95,
-        tensor_parallel_size: Optional[int] = None,
-        limit_mm_per_prompt: Optional[dict[str, int]] = None,
-        seed: int = 1234,
-        trust_remote_code: bool = True,
-        use_audio_in_video: bool = True,
-        llm: Any | None = None,
-        processor: Any | None = None,
-        sampling_params: Any | None = None,
-        process_mm_info: Callable[[list, Any], tuple[Any, Any, Any]] | None = None,
-        extra_llm_kwargs: Optional[dict[str, Any]] = None,
-        extra_sampling_kwargs: Optional[dict[str, Any]] = None,
-    ) -> None:
-        self.model_path = str(model_path or self.DEFAULT_MODEL_PATH)
-        self.prompt_template = prompt_template
-        self.temperature = temperature
-        self.top_p = top_p
-        self.top_k = top_k
-        self.max_tokens = max_tokens
-        self.max_model_len = max_model_len
-        self.max_num_seqs = max_num_seqs
-        self.gpu_memory_utilization = gpu_memory_utilization
-        self._tensor_parallel_size = tensor_parallel_size
-        self.limit_mm_per_prompt = limit_mm_per_prompt or {"image": 3, "video": 3, "audio": 3}
-        self.seed = seed
-        self.trust_remote_code = trust_remote_code
-        self.use_audio_in_video = use_audio_in_video
-        self._llm = llm
-        self._processor = processor
-        self._sampling_params = sampling_params
-        self._process_mm_info = process_mm_info
-        self.extra_llm_kwargs = extra_llm_kwargs or {}
-        self.extra_sampling_kwargs = extra_sampling_kwargs or {}
-
-    @property
-    def model_path_str(self) -> str:
-        return self.model_path
-
-    def export_runtime_components(self) -> dict[str, Any]:
-        """Expose instantiated vLLM components for reuse (e.g., vision client)."""
-
-        return {
-            "llm": self._ensure_llm(),
-            "processor": self._ensure_processor(),
-            "sampling_params": self._ensure_sampling_params(),
-            "process_mm_info": self._process_mm_messages(),
-        }
-
-    def transcribe(
-        self,
-        audio_path: Path | str,
-        *,
-        language: str = "en",
-        media_type: str = "audio",
-    ) -> str:
-        path = Path(audio_path).resolve()
+        Raises:
+            RuntimeError: If the request fails after retries or on connection/timeout errors
+        """
+        path = Path(audio_path)
         if not path.exists():
             raise FileNotFoundError(f"Audio file not found: {path}")
 
-        os.environ.setdefault("VLLM_USE_V1", "0")
+        url = f"{self.base_url.rstrip('/')}/v1/audio/transcriptions"
 
-        prompt_text = self.prompt_template.format(media_type=media_type, language=language)
+        # Prepare form data
+        data: dict[str, str] = {"model": self.model, "response_format": "json"}
+        if language:
+            data["language"] = language
 
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": media_type, media_type: str(path)},
-                    {"type": "text", "text": prompt_text},
-                ],
-            }
-        ]
+        last_exception: Exception | None = None
 
-        processor = self._ensure_processor()
-        prompt = processor.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        for attempt in range(self.max_retries):
+            try:
+                with open(path, "rb") as audio_file:
+                    files = {"file": (path.name, audio_file, "audio/mpeg")}
+                    # Use proxies={} to bypass environment proxies for localhost
+                    response = requests.post(
+                        url,
+                        files=files,
+                        data=data,
+                        timeout=self.timeout,
+                        proxies={},
+                        stream=True,
+                    )
+                    response.raise_for_status()
+                    return self._parse_response(response)
 
-        mm_messages = self._process_mm_messages()
-        audios, images, videos = mm_messages(messages, use_audio_in_video=self.use_audio_in_video)
+            except requests.ConnectionError as exc:
+                raise RuntimeError(
+                    f"ASR request failed: connection error - {exc}"
+                ) from exc
+            except requests.Timeout as exc:
+                raise RuntimeError(f"ASR request failed: timeout - {exc}") from exc
+            except requests.HTTPError as exc:
+                last_exception = exc
+                # Retry on HTTP errors (transient failures)
+                if attempt < self.max_retries - 1:
+                    # Exponential backoff: delay increases with each retry
+                    time.sleep(self.retry_delay * (2**attempt))
+                    continue
+                break
 
-        multi_modal_data: dict[str, Any] = {}
-        if audios is not None:
-            multi_modal_data["audio"] = audios
-        if images is not None:
-            multi_modal_data["image"] = images
-        if videos is not None:
-            multi_modal_data["video"] = videos
+        # All retries exhausted
+        raise RuntimeError(
+            f"ASR request failed after {self.max_retries} retries"
+        ) from last_exception
 
-        inputs = {
-            "prompt": prompt,
-            "multi_modal_data": multi_modal_data,
-            "mm_processor_kwargs": {
-                "use_audio_in_video": self.use_audio_in_video,
-            },
-        }
+    def _parse_response(self, response: requests.Response) -> str:
+        """Parse streaming or non-streaming response from ASR service.
 
-        llm = self._ensure_llm()
-        sampling_params = self._ensure_sampling_params()
-        outputs = llm.generate([inputs], sampling_params=sampling_params)
+        Handles SSE (Server-Sent Events) format with 'data:' prefix,
+        or falls back to non-streaming JSON response.
 
-        try:
-            text = outputs[0].outputs[0].text
-        except (IndexError, AttributeError, TypeError) as exc:
-            raise RuntimeError("Local ASR response payload is malformed") from exc
+        Args:
+            response: The HTTP response from the ASR service
 
-        return str(text).strip()
+        Returns:
+            Accumulated transcript text
+        """
+        transcript_chunks: list[str] = []
+
+        # Check if this is a streaming response by looking at content-type or
+        # trying to iterate lines
+        content_type = response.headers.get("Content-Type", "").lower()
+        is_sse = "text/event-stream" in content_type
+
+        if is_sse:
+            # Parse SSE format: data: {...} lines with [DONE] terminator
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+
+                # Remove optional 'data:' prefix
+                line_str = line.decode("utf-8") if isinstance(line, bytes) else line
+                if line_str.startswith("data: "):
+                    line_str = line_str[6:]
+                elif line_str.startswith("data:"):
+                    line_str = line_str[5:]
+
+                line_str = line_str.strip()
+
+                if not line_str:
+                    continue
+
+                # Check for SSE terminator
+                if line_str == "[DONE]":
+                    break
+
+                # Parse JSON payload and extract text
+                try:
+                    payload = line_str
+                    if payload:
+                        chunk_text = self._extract_text_from_payload(payload)
+                        if chunk_text:
+                            transcript_chunks.append(chunk_text)
+                except Exception:
+                    # Skip malformed lines in streaming mode
+                    continue
+        else:
+            # Fallback to non-streaming JSON
+            try:
+                result = response.json()
+                text = self._extract_text_from_payload(result)
+                if text:
+                    transcript_chunks.append(text)
+            except (ValueError, KeyError) as exc:
+                raise RuntimeError(f"ASR response parsing failed: {exc}") from exc
+
+        return "".join(transcript_chunks)
+
+    def _extract_text_from_payload(self, payload: str | dict[str, Any]) -> str | None:
+        """Extract transcript text from a JSON payload.
+
+        Supports multiple response formats:
+        - Simple: {"text": "transcript"}
+        - OpenAI streaming delta: {"choices": [{"delta": {"content": "..."}}]}
+        - OpenAI message: {"choices": [{"message": {"content": "..."}}]}
+
+        Args:
+            payload: JSON string or parsed dict
+
+        Returns:
+            Extracted text or None if not found
+        """
+        # Parse if string
+        data: dict[str, Any]
+        if isinstance(payload, str):
+            try:
+                data = payload.strip()
+                if not data:
+                    return None
+                import json
+
+                data = json.loads(data)
+            except (ValueError, TypeError):
+                return None
+        else:
+            data = payload
+
+        if not isinstance(data, dict):
+            return None
+
+        # Try simple "text" field first (preferred)
+        if "text" in data and isinstance(data["text"], str):
+            return data["text"]
+
+        # Try OpenAI-style choices array
+        choices = data.get("choices")
+        if not choices or not isinstance(choices, list) or len(choices) == 0:
+            return None
+
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            return None
+
+        # Try delta format (streaming)
+        delta = first_choice.get("delta")
+        if isinstance(delta, dict):
+            content = delta.get("content")
+            if isinstance(content, str):
+                return content
+
+        # Try message format (non-streaming)
+        message = first_choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+
+        return None
 
 
-    def _ensure_llm(self) -> Any:
-        if self._llm is None:
-            self._llm = self._create_llm()
-        return self._llm
-
-    def _ensure_processor(self) -> Any:
-        if self._processor is None:
-            self._processor = self._create_processor()
-        return self._processor
-
-    def _ensure_sampling_params(self) -> Any:
-        if self._sampling_params is None:
-            self._sampling_params = self._create_sampling_params()
-        return self._sampling_params
-
-    def _process_mm_messages(self) -> Callable[[list, Any], tuple[Any, Any, Any]]:
-        if self._process_mm_info is None:
-            self._process_mm_info = self._load_process_mm_info()
-        return self._process_mm_info
-
-    def _create_llm(self) -> Any:
-        try:
-            from vllm import LLM
-        except ImportError as exc:  # pragma: no cover - handled in tests via injection
-            raise RuntimeError("vLLM is required for LocalQwenASRClient") from exc
-
-        tensor_parallel_size = self._tensor_parallel_size
-        if tensor_parallel_size is None:
-            tensor_parallel_size = self._infer_tensor_parallel_size()
-
-        return LLM(
-            model=self.model_path,
-            trust_remote_code=self.trust_remote_code,
-            gpu_memory_utilization=self.gpu_memory_utilization,
-            tensor_parallel_size=tensor_parallel_size,
-            limit_mm_per_prompt=self.limit_mm_per_prompt,
-            max_num_seqs=self.max_num_seqs,
-            max_model_len=self.max_model_len,
-            seed=self.seed,
-            **self.extra_llm_kwargs,
-        )
-
-    def _create_processor(self) -> Any:
-        try:
-            from transformers import Qwen3OmniMoeProcessor
-        except ImportError as exc:  # pragma: no cover - handled in tests via injection
-            raise RuntimeError("transformers is required for LocalQwenASRClient") from exc
-
-        return Qwen3OmniMoeProcessor.from_pretrained(self.model_path)
-
-    def _create_sampling_params(self) -> Any:
-        try:
-            from vllm import SamplingParams
-        except ImportError as exc:  # pragma: no cover - handled in tests via injection
-            raise RuntimeError("vLLM SamplingParams is required for LocalQwenASRClient") from exc
-
-        params: dict[str, Any] = {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "top_k": self.top_k,
-            "max_tokens": self.max_tokens,
-        }
-        params.update(self.extra_sampling_kwargs)
-        return SamplingParams(**params)
-
-    @staticmethod
-    def _load_process_mm_info() -> Callable[[list, Any], tuple[Any, Any, Any]]:
-        try:
-            from qwen_omni_utils import process_mm_info
-        except ImportError as exc:  # pragma: no cover - handled in tests via injection
-            raise RuntimeError("qwen_omni_utils.process_mm_info is required for LocalQwenASRClient") from exc
-        return process_mm_info
-
-    @staticmethod
-    def _infer_tensor_parallel_size() -> int:
-        try:
-            import torch
-        except ImportError:  # pragma: no cover - torch may be unavailable during tests
-            return 1
-
-        count = getattr(torch.cuda, "device_count", lambda: 0)()
-        return count if count else 1
-
-
-class LocalQwenVisionClient(LocalQwenASRClient):
-    """Thin wrapper around the ASR client to generate image descriptions."""
+class LocalOCRClient:
+    """Client for local OCR/vision model via HTTP API."""
 
     def __init__(
         self,
         *,
-        model_path: str | Path | None = None,
-        prompt_template: str = (
-            "Extract all the text on the image, including subtitles, and any visible text. Only output the extracted text, and no other descriptions."
-        ),
-        **kwargs: Any,
+        base_url: str = "http://127.0.0.1:8001",
+        model: str = "qwen2-vl",
+        timeout: int = 300,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
     ) -> None:
-        super().__init__(model_path=model_path, prompt_template=prompt_template, **kwargs)
+        self.base_url = base_url
+        self.model = model
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
 
     def describe_image(self, image_path: Path | str, *, language: str = "en") -> str:
-        return super().transcribe(image_path, language=language, media_type="image")
+        """Describe/OCR an image using local vision model service.
+
+        Args:
+            image_path: Path to the image file to analyze
+            language: Language code for the expected text (e.g., 'en', 'zh')
+
+        Returns:
+            Extracted text from the image
+
+        Raises:
+            FileNotFoundError: If the image file does not exist
+            RuntimeError: If the request fails after retries
+            ConnectionError: If connection to the service fails
+            TimeoutError: If the request times out
+        """
+        path = Path(image_path).resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Image file not found: {path}")
+
+        url = f"{self.base_url.rstrip('/')}/v1/chat/completions"
+
+        # Build OpenAI-style chat completion request with vision
+        prompt_text = f"Extract all text from this image. Language: {language}"
+        request_json = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"file://{path}"},
+                        },
+                    ],
+                }
+            ],
+        }
+
+        last_exception: Exception | None = None
+
+        for attempt in range(self.max_retries):
+            try:
+                # Use proxies={} to bypass environment proxies for localhost
+                response = requests.post(
+                    url,
+                    json=request_json,
+                    timeout=self.timeout,
+                    proxies={},
+                )
+                response.raise_for_status()
+                result = response.json()
+                return str(result["choices"][0]["message"]["content"])
+
+            except requests.ConnectionError as exc:
+                raise ConnectionError(
+                    f"OCR request failed: connection error - {exc}"
+                ) from exc
+            except requests.Timeout as exc:
+                raise TimeoutError(f"OCR request failed: timeout - {exc}") from exc
+            except requests.HTTPError as exc:
+                last_exception = exc
+                # Retry on HTTP errors (transient failures)
+                if attempt < self.max_retries - 1:
+                    # Exponential backoff: delay increases with each retry
+                    time.sleep(self.retry_delay * (2**attempt))
+                    continue
+                # Last attempt failed, raise RuntimeError with HTTP details
+                raise RuntimeError(f"HTTP 500: Internal Server Error") from exc
+
+        # Should not reach here, but for type safety
+        raise RuntimeError(
+            f"OCR request failed after {self.max_retries} retries"
+        ) from last_exception

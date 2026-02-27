@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Optional
 
-from .asr_client import BailianASRClient, LocalQwenASRClient, LocalQwenVisionClient
+from .asr_client import LocalASRClient, LocalOCRClient
 from .audio import extract_audio, extract_video_frames, split_audio_on_silence
 from .summarizer import ChataiSummarizer, TranscriptCorrector
 
@@ -17,18 +17,15 @@ def process_video(
     audio_sample_rate: int = 16000,
     audio_bitrate: str | None = "64k",
     max_segment_duration: float = 60.0,
-    bailian_client: Optional[BailianASRClient] = None,
-    bailian_options: Optional[dict[str, Any]] = None,
-    asr_backend: str = "bailian",
-    local_client: Optional[LocalQwenASRClient] = None,
-    local_asr_options: Optional[dict[str, Any]] = None,
+    asr_client: Optional[LocalASRClient] = None,
+    asr_options: Optional[dict[str, Any]] = None,
     summarizer: Optional[ChataiSummarizer] = None,
     summarizer_model: str | None = None,
     enable_image_context: bool = False,
     frame_interval_seconds: float = 5.0,
     frame_output_dir: Path | str | None = None,
-    vision_client: Optional[LocalQwenVisionClient] = None,
-    vision_options: Optional[dict[str, Any]] = None,
+    ocr_client: Optional[LocalOCRClient] = None,
+    ocr_options: Optional[dict[str, Any]] = None,
     transcript_corrector: Optional[TranscriptCorrector] = None,
     transcript_corrector_model: str | None = None,
     cleanup: bool = False,
@@ -44,21 +41,12 @@ def process_video(
         audio_bitrate=audio_bitrate,
     )
 
-    backend = asr_backend.lower()
-    if backend == "bailian":
-        if bailian_client is not None:
-            asr = bailian_client
-        else:
-            options = bailian_options or {}
-            asr = BailianASRClient(**options)
-    elif backend == "local":
-        if local_client is not None:
-            asr = local_client
-        else:
-            options = local_asr_options or {}
-            asr = LocalQwenASRClient(**options)
+    if asr_client is not None:
+        asr = asr_client
     else:
-        raise ValueError(f"Unsupported ASR backend: {asr_backend}")
+        options = asr_options or {}
+        asr = LocalASRClient(**options)
+
     transcripts: list[str] = []
 
     with TemporaryDirectory() as tmpdir:
@@ -75,21 +63,19 @@ def process_video(
         transcript = ""
 
     corrected_transcript = transcript
-    local_asr_client = asr if isinstance(asr, LocalQwenASRClient) else None
 
     if debug:
         print("[debug] transcript-before-correction:\n", transcript)
 
-    if enable_image_context and backend == "local" and transcript.strip():
+    if enable_image_context and transcript.strip():
         corrected_transcript = _apply_image_context_corrections(
             video=video,
             language=language,
             transcript=transcript,
             frame_interval_seconds=frame_interval_seconds,
             frame_output_dir=frame_output_dir,
-            vision_client=vision_client,
-            vision_options=vision_options,
-            local_asr_client=local_asr_client,
+            ocr_client=ocr_client,
+            ocr_options=ocr_options,
             transcript_corrector=transcript_corrector,
             transcript_corrector_model=transcript_corrector_model,
             debug=debug,
@@ -130,9 +116,8 @@ def _apply_image_context_corrections(
     transcript: str,
     frame_interval_seconds: float,
     frame_output_dir: Path | str | None,
-    vision_client: Optional[LocalQwenVisionClient],
-    vision_options: Optional[dict[str, Any]],
-    local_asr_client: Optional[LocalQwenASRClient],
+    ocr_client: Optional[LocalOCRClient],
+    ocr_options: Optional[dict[str, Any]],
     transcript_corrector: Optional[TranscriptCorrector],
     transcript_corrector_model: str | None,
     debug: bool,
@@ -154,19 +139,14 @@ def _apply_image_context_corrections(
         if not frames:
             return transcript
 
-        vision = vision_client
-        if vision is None:
-            options = dict(vision_options or {})
-            if local_asr_client is not None:
-                shared = local_asr_client.export_runtime_components()
-                shared.setdefault("model_path", local_asr_client.model_path_str)
-                for key, value in shared.items():
-                    options.setdefault(key, value)
-            vision = LocalQwenVisionClient(**options)
+        ocr = ocr_client
+        if ocr is None:
+            options = ocr_options or {}
+            ocr = LocalOCRClient(**options)
 
         description_files: list[Path] = []
         for frame in frames:
-            description = vision.describe_image(frame, language=language)
+            description = ocr.describe_image(frame, language=language)
             text_path = frame.with_suffix(".txt")
             text_path.write_text(description)
             description_files.append(text_path)
@@ -190,7 +170,9 @@ def _apply_image_context_corrections(
                 corrector_kwargs["model"] = transcript_corrector_model
             corrector = TranscriptCorrector(**corrector_kwargs)
 
-        corrected = corrector.correct(transcript, image_context=image_context, language=language)
+        corrected = corrector.correct(
+            transcript, image_context=image_context, language=language
+        )
         if debug:
             print("[debug] transcript-after-correction:\n", corrected)
         return corrected
