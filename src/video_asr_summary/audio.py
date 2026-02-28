@@ -1,11 +1,30 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
 
 from pydub import AudioSegment
 from pydub.silence import detect_silence
+
+
+def format_timestamp(seconds: float) -> str:
+    """Format seconds into [MM:SS] timestamp string."""
+    total_seconds = int(seconds)
+    minutes = total_seconds // 60
+    secs = total_seconds % 60
+    return f"[{minutes:02d}:{secs:02d}]"
+
+
+@dataclass
+class FrameContext:
+    """Context for a video frame with timestamp metadata."""
+
+    timestamp_start: float
+    timestamp_end: float
+    frame_path: Path
+    ocr_text: str = ""
 
 
 def extract_audio(
@@ -64,7 +83,9 @@ def extract_audio(
     command.append(str(target))
 
     try:
-        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
     except subprocess.CalledProcessError as exc:  # pragma: no cover - handled in tests
         raise RuntimeError("Failed to extract audio with ffmpeg") from exc
 
@@ -78,10 +99,10 @@ def extract_video_frames(
     output_dir: Path | str | None = None,
     image_format: str = "jpg",
     frame_prefix: str = "frame",
-) -> list[Path]:
+) -> list[FrameContext]:
     """Extract JPEG frames every ``interval_seconds`` seconds using ffmpeg.
 
-    Returns a list of extracted frame paths sorted in ascending order.
+    Returns a list of extracted frame contexts sorted in ascending order.
     """
 
     if interval_seconds <= 0:
@@ -105,12 +126,22 @@ def extract_video_frames(
     ]
 
     try:
-        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
     except subprocess.CalledProcessError as exc:  # pragma: no cover - handled via tests
         raise RuntimeError("Failed to extract video frames with ffmpeg") from exc
 
     frame_paths = sorted(target_dir.glob(f"{frame_prefix}_*.{image_format}"))
-    return frame_paths
+    frame_contexts = [
+        FrameContext(
+            timestamp_start=index * interval_seconds,
+            timestamp_end=(index + 1) * interval_seconds,
+            frame_path=frame_path,
+        )
+        for index, frame_path in enumerate(frame_paths)
+    ]
+    return frame_contexts
 
 
 def split_audio_on_silence(
@@ -166,7 +197,10 @@ def split_audio_on_silence(
         chunk = audio[start_ms:end_ms]
         duration_ms = len(chunk)
 
-        if duration_ms < max(min_export_duration_ms, 1) and chunk.rms <= silent_rms_threshold:
+        if (
+            duration_ms < max(min_export_duration_ms, 1)
+            and chunk.rms <= silent_rms_threshold
+        ):
             return None
 
         if chunk.rms <= silent_rms_threshold and duration_ms < min_silence_len_ms:

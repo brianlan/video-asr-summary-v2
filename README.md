@@ -1,54 +1,76 @@
 # video-asr-summary-v2
 
-Pipeline for extracting audio from video, transcribing it with Alibaba Bailian ASR, and summarizing via chatai's OpenAI-compatible API.
+This tool extracts audio from videos, transcribes it using a local ASR service, and generates a summary through an OpenAI-compatible API. It also supports optional visual context via a local OCR service to improve transcription accuracy.
 
-## Prepare the environment to run the program
-- conda create -p /ssd4/envs/vllm_torch271_py310_cu128 python=3.10
-- pip install git+https://github.com/huggingface/transformers@0419ff881d7bb503f4fc0f0a7a5aac3d012c9b91
-- pip install --pre torch==2.7.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-- pip install uv
-- git clone -b qwen3_omni https://github.com/wangxiongts/vllm.git
-- cd vllm
-- python use_existing_torch.py
-- pip install -r requirements/build.txt -i https://mirrors.bfsu.edu.cn/pypi/web/simple
-- MAX_JOBS=16 uv pip install --no-build-isolation -e .
-- pip install accelerate-1.11.0
-- pip install yt_dlp
-- pip install pydub
-- pip install lark-oapi
-- pip install qwen-omni-utils -U
-- pip install -U --no-build-isolation https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.4.11/flash_attn-2.8.3+cu128torch2.7-cp310-cp310-linux_x86_64.whl
+## Architecture
 
+The pipeline relies on two local services:
+- **ASR Server**: Located at `http://127.0.0.1:8002/v1/audio/transcriptions`. It handles audio transcription.
+- **OCR Server**: Located at `http://127.0.0.1:8001/v1/chat/completions`. It provides visual descriptions of video frames to correct transcription errors.
 
-## Quick start
+## Environment Setup
 
-1. Ensure the environment variables `BAILIAN_API_KEY` and `OPENAI_ACCESS_TOKEN` are exported.
-2. Activate the provided Conda environment `video_asr_summary_py311` and install dependencies:
+This project assumes an existing Python environment at `/ssd4/envs/vllm_torch271_py310_cu128`. We do not modify this environment.
 
-	```bash
-	/Users/rlan/miniforge3/envs/video_asr_summary_py311/bin/python -m pip install -e '.[dev]'
-	```
+To install the project in your current environment:
 
-3. Run the pipeline:
+```bash
+PYTHONPATH=src pip install -e '.[dev]'
+```
 
-	```python
-	from pathlib import Path
+## Quick Start
 
-	from video_asr_summary import process_video
+### Python API
 
-	result = process_video(Path("/path/to/video.mp4"), language="en-US")
-	print(result["summary"]["summary"])
-	```
+```python
+from pathlib import Path
+from video_asr_summary import process_video
 
-4. Execute tests with:
+# Run the pipeline
+result = process_video(Path("path/to/video.mp4"), language="zh")
 
-	```bash
-	/Users/rlan/miniforge3/envs/video_asr_summary_py311/bin/python -m pytest
-	```
+print("Transcript:", result["transcript"])
+print("Summary:", result["summary"])
+```
+
+### CLI
+
+Run the pipeline on a local file:
+
+```bash
+PYTHONPATH=src python scripts/process_video.py path/to/video.mp4 --language zh
+```
+
+Run the pipeline on a video URL (requires `yt-dlp`):
+
+```bash
+PYTHONPATH=src python scripts/process_video.py "https://www.youtube.com/watch?v=example" --language en
+```
+
+### CLI Options
+
+- `video`: Path to video file or URL.
+- `--asr-url`: ASR service base URL (default: `http://127.0.0.1:8002`).
+- `--asr-model`: ASR model name (default: `whisper`).
+- `--ocr-url`: OCR service base URL (default: `http://127.0.0.1:8001`).
+- `--ocr-model`: OCR model name (default: `qwen2-vl`).
+- `--enable-image-context`: Enable visual context to help correct transcriptions.
+- `--language`: Language code for ASR and summarizer (default: `zh`).
+- `--summary-only`: Print only the summary text.
+- `--publish-to-lark`: Create a Lark doc with the generated summary.
+
+## Development
+
+Run tests:
+
+```bash
+PYTHONPATH=src pytest
+```
 
 ## Notes
 
-- External API calls are isolated inside `BailianASRClient` and `ChataiSummarizer`; both accept custom endpoints and credentials for testing or overrides.
-- `process_video` compresses extracted audio to MP3 (configurable) before upload so large source videos stay within Bailian's size limits.
-- `BailianASRClient` now routes through DashScope's `MultiModalConversation` API, uploading local audio files automatically and supporting optional per-call language overrides.
-- `process_video` accepts optional injected client instances and supports automatic cleanup of the intermediate audio file via the `cleanup` flag.
+- The pipeline uses `LocalASRClient` and `LocalOCRClient` to communicate with local servers.
+- Localhost calls bypass environment proxies.
+- Audio is compressed to MP3 before being sent to the ASR service.
+- Transcript correction uses visual descriptions obtained from the OCR service.
+

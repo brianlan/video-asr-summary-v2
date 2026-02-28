@@ -4,9 +4,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Optional
 
-from .asr_client import BailianASRClient, LocalQwenASRClient, LocalQwenVisionClient
-from .audio import extract_audio, extract_video_frames, split_audio_on_silence
-from .summarizer import ChataiSummarizer, TranscriptCorrector
+from .asr_client import LocalASRClient, LocalOCRClient
+from .audio import (
+    extract_audio,
+    extract_video_frames,
+    format_timestamp,
+    split_audio_on_silence,
+)
+from .summarizer import StructuredSummarizer, TranscriptCorrector
 
 
 def process_video(
@@ -17,20 +22,18 @@ def process_video(
     audio_sample_rate: int = 16000,
     audio_bitrate: str | None = "64k",
     max_segment_duration: float = 60.0,
-    bailian_client: Optional[BailianASRClient] = None,
-    bailian_options: Optional[dict[str, Any]] = None,
-    asr_backend: str = "bailian",
-    local_client: Optional[LocalQwenASRClient] = None,
-    local_asr_options: Optional[dict[str, Any]] = None,
-    summarizer: Optional[ChataiSummarizer] = None,
+    asr_client: Optional[LocalASRClient] = None,
+    asr_options: Optional[dict[str, Any]] = None,
+    summarizer: Optional[StructuredSummarizer] = None,
     summarizer_model: str | None = None,
     enable_image_context: bool = False,
     frame_interval_seconds: float = 5.0,
     frame_output_dir: Path | str | None = None,
-    vision_client: Optional[LocalQwenVisionClient] = None,
-    vision_options: Optional[dict[str, Any]] = None,
+    ocr_client: Optional[LocalOCRClient] = None,
+    ocr_options: Optional[dict[str, Any]] = None,
     transcript_corrector: Optional[TranscriptCorrector] = None,
     transcript_corrector_model: str | None = None,
+    enable_transcript_correction: bool = False,
     cleanup: bool = False,
     debug: bool = False,
 ) -> dict[str, Any]:
@@ -44,21 +47,12 @@ def process_video(
         audio_bitrate=audio_bitrate,
     )
 
-    backend = asr_backend.lower()
-    if backend == "bailian":
-        if bailian_client is not None:
-            asr = bailian_client
-        else:
-            options = bailian_options or {}
-            asr = BailianASRClient(**options)
-    elif backend == "local":
-        if local_client is not None:
-            asr = local_client
-        else:
-            options = local_asr_options or {}
-            asr = LocalQwenASRClient(**options)
+    if asr_client is not None:
+        asr = asr_client
     else:
-        raise ValueError(f"Unsupported ASR backend: {asr_backend}")
+        options = asr_options or {}
+        asr = LocalASRClient(**options)
+
     transcripts: list[str] = []
 
     with TemporaryDirectory() as tmpdir:
@@ -74,26 +68,39 @@ def process_video(
     if not transcript:
         transcript = ""
 
-    corrected_transcript = transcript
-    local_asr_client = asr if isinstance(asr, LocalQwenASRClient) else None
+    frame_contexts = []
 
-    if debug:
-        print("[debug] transcript-before-correction:\n", transcript)
-
-    if enable_image_context and backend == "local" and transcript.strip():
-        corrected_transcript = _apply_image_context_corrections(
+    if enable_image_context or enable_transcript_correction:
+        frame_contexts = _collect_frame_contexts(
             video=video,
             language=language,
-            transcript=transcript,
             frame_interval_seconds=frame_interval_seconds,
             frame_output_dir=frame_output_dir,
-            vision_client=vision_client,
-            vision_options=vision_options,
-            local_asr_client=local_asr_client,
-            transcript_corrector=transcript_corrector,
-            transcript_corrector_model=transcript_corrector_model,
+            ocr_client=ocr_client,
+            ocr_options=ocr_options,
             debug=debug,
         )
+
+    corrected_transcript: str | None = None
+    transcript_correction_error: str | None = None
+    if enable_transcript_correction:
+        if transcript_corrector is not None:
+            corrector = transcript_corrector
+        else:
+            transcript_corrector_kwargs: dict[str, Any] = {}
+            if transcript_corrector_model is not None:
+                transcript_corrector_kwargs["model"] = transcript_corrector_model
+            corrector = TranscriptCorrector(**transcript_corrector_kwargs)
+        image_context = _build_transcript_correction_image_context(frame_contexts)
+        try:
+            corrected_transcript = corrector.correct(
+                transcript,
+                image_context=image_context,
+                language=language,
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve transcript and summary on failure
+            corrected_transcript = None
+            transcript_correction_error = str(exc) or exc.__class__.__name__
 
     if summarizer is not None:
         llm = summarizer
@@ -101,11 +108,16 @@ def process_video(
         summarizer_kwargs: dict[str, Any] = {}
         if summarizer_model is not None:
             summarizer_kwargs["model"] = summarizer_model
-        llm = ChataiSummarizer(**summarizer_kwargs)
+        llm = StructuredSummarizer(**summarizer_kwargs)
     summary: str | None
     summarizer_error: str | None = None
     try:
-        summary = llm.summarize(corrected_transcript, language=language)
+        summarizer_frame_contexts = frame_contexts if enable_image_context else []
+        summary = llm.summarize(
+            transcript,
+            summarizer_frame_contexts,
+            language=language,
+        )
     except Exception as exc:  # noqa: BLE001 - we must preserve the transcript on any failure
         summary = None
         summarizer_error = str(exc) or exc.__class__.__name__
@@ -114,29 +126,28 @@ def process_video(
         audio_path.unlink(missing_ok=True)
 
     result: dict[str, Any] = {
-        "transcript": corrected_transcript,
+        "transcript": transcript,
+        "corrected_transcript": corrected_transcript,
         "summary": summary,
     }
+    if transcript_correction_error is not None:
+        result["transcript_correction_error"] = transcript_correction_error
     if summarizer_error is not None:
         result["summarizer_error"] = summarizer_error
 
     return result
 
 
-def _apply_image_context_corrections(
+def _collect_frame_contexts(
     *,
     video: Path,
     language: str,
-    transcript: str,
     frame_interval_seconds: float,
     frame_output_dir: Path | str | None,
-    vision_client: Optional[LocalQwenVisionClient],
-    vision_options: Optional[dict[str, Any]],
-    local_asr_client: Optional[LocalQwenASRClient],
-    transcript_corrector: Optional[TranscriptCorrector],
-    transcript_corrector_model: str | None,
+    ocr_client: Optional[LocalOCRClient],
+    ocr_options: Optional[dict[str, Any]],
     debug: bool,
-) -> str:
+) -> list[Any]:
     frame_tempdir: TemporaryDirectory[str] | None = None
     if frame_output_dir is None:
         frame_tempdir = TemporaryDirectory()
@@ -152,48 +163,47 @@ def _apply_image_context_corrections(
             output_dir=frames_dir,
         )
         if not frames:
-            return transcript
+            return []
 
-        vision = vision_client
-        if vision is None:
-            options = dict(vision_options or {})
-            if local_asr_client is not None:
-                shared = local_asr_client.export_runtime_components()
-                shared.setdefault("model_path", local_asr_client.model_path_str)
-                for key, value in shared.items():
-                    options.setdefault(key, value)
-            vision = LocalQwenVisionClient(**options)
+        ocr = ocr_client
+        if ocr is None:
+            options = ocr_options or {}
+            ocr = LocalOCRClient(**options)
 
-        description_files: list[Path] = []
+        enriched_frames: list[Any] = []
         for frame in frames:
-            description = vision.describe_image(frame, language=language)
-            text_path = frame.with_suffix(".txt")
-            text_path.write_text(description)
-            description_files.append(text_path)
-
-        image_context: list[str] = []
-        for text_file in description_files:
+            frame_path = frame.frame_path
             try:
-                saved = text_file.read_text().strip()
-            except OSError:
+                frame.ocr_text = ocr.describe_image(
+                    frame_path, language=language
+                ).strip()
+            except Exception as exc:  # noqa: BLE001 - one frame failure should not fail whole run
+                if debug:
+                    print(f"[debug] skipped frame OCR failure: {frame_path}: {exc}")
                 continue
-            if saved:
-                image_context.append(saved)
+            enriched_frames.append(frame)
 
-        if not image_context:
-            return transcript
-
-        corrector = transcript_corrector
-        if corrector is None:
-            corrector_kwargs: dict[str, Any] = {}
-            if transcript_corrector_model is not None:
-                corrector_kwargs["model"] = transcript_corrector_model
-            corrector = TranscriptCorrector(**corrector_kwargs)
-
-        corrected = corrector.correct(transcript, image_context=image_context, language=language)
-        if debug:
-            print("[debug] transcript-after-correction:\n", corrected)
-        return corrected
+        return enriched_frames
     finally:
         if frame_tempdir is not None:
             frame_tempdir.cleanup()
+
+
+def _build_transcript_correction_image_context(frame_contexts: list[Any]) -> list[str]:
+    lines: list[str] = []
+    ordered_contexts = sorted(
+        frame_contexts,
+        key=lambda frame: (
+            frame.timestamp_start,
+            frame.timestamp_end,
+            str(frame.frame_path),
+        ),
+    )
+    for frame in ordered_contexts:
+        ocr_text = frame.ocr_text.strip()
+        if not ocr_text:
+            continue
+        start = format_timestamp(frame.timestamp_start).strip("[]")
+        end = format_timestamp(frame.timestamp_end).strip("[]")
+        lines.append(f"[{start}-{end}] {ocr_text}")
+    return lines

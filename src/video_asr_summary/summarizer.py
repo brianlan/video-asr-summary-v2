@@ -7,6 +7,8 @@ from typing import Any, Sequence
 
 import requests
 
+from .audio import FrameContext, format_timestamp
+
 try:  # pragma: no cover - dependency declared but guard for optional envs
     import json_repair
 except ImportError:  # pragma: no cover
@@ -21,7 +23,7 @@ class ChataiSummarizer:
         *,
         api_token: str | None = None,
         base_url: str = "https://api.chataiapi.com/v1",
-        model: str = "gpt-5-mini", # other available models: ["gpt-5-mini"]
+        model: str = "gpt-5-mini",  # other available models: ["gpt-5-mini"]
         timeout: int = 120,
     ) -> None:
         self.api_token = api_token or os.getenv("OPENAI_ACCESS_TOKEN")
@@ -80,7 +82,9 @@ class ChataiSummarizer:
                 timeout=self.timeout,
             )
             response.raise_for_status()
-        except requests.RequestException as exc:  # pragma: no cover - exercised via tests
+        except (
+            requests.RequestException
+        ) as exc:  # pragma: no cover - exercised via tests
             raise RuntimeError("Summarization request failed") from exc
 
         data = response.json()
@@ -93,6 +97,124 @@ class ChataiSummarizer:
             raise RuntimeError("Summarization response content is not text")
 
         return content
+
+
+class StructuredSummarizer:
+    def __init__(
+        self,
+        *,
+        api_token: str | None = None,
+        base_url: str = "https://api.chataiapi.com/v1",
+        model: str = "gpt-5-mini",
+        timeout: int = 120,
+    ) -> None:
+        self.api_token = api_token or os.getenv("OPENAI_ACCESS_TOKEN")
+        if not self.api_token:
+            raise RuntimeError("OPENAI_ACCESS_TOKEN is not set")
+
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout = timeout
+
+    def summarize(
+        self,
+        transcript: str,
+        frame_contexts: Sequence[FrameContext],
+        *,
+        language: str | None = None,
+        instructions: str | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        prompt_instructions = instructions or (
+            "Role: You are an expert editor and content analyst.\n\n"
+            "Task: I will provide two synchronized sources from one video: a raw transcript and "
+            "time-ordered visual context extracted from frames. Use both sources in one pass to "
+            "produce a coherent, faithful markdown article.\n\n"
+            "Key Requirements:\n"
+            "  - Improve clarity while preserving the speaker's intent, reasoning, examples, and important details.\n"
+            "  - Use visual context only to resolve ambiguity or strengthen factual accuracy; do not invent facts.\n"
+            "  - Keep structure clear with a title, sections, and concise paragraphs or bullets where helpful.\n"
+            "  - Include [MM:SS] timestamps in the final markdown for key statements so readers can trace claims to the video timeline.\n\n"
+            "Output Format:\n"
+            "  - Use Markdown.\n"
+            "  - Begin with a single H1 heading as the article title.\n"
+            "  - Do not include conversational preamble or closing remarks.\n"
+        )
+        if language:
+            prompt_instructions += f"Produce the markdown in {language}."
+
+        visual_context = self._render_visual_context(frame_contexts)
+        user_content = (
+            "=== TRANSCRIPT ===\n"
+            f"{transcript.strip()}\n\n"
+            "=== VISUAL CONTEXT (Time-Ordered) ===\n"
+            f"{visual_context}"
+        )
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": prompt_instructions},
+                {"role": "user", "content": user_content},
+            ],
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+        except (
+            requests.RequestException
+        ) as exc:  # pragma: no cover - exercised via tests
+            raise RuntimeError("Structured summarization request failed") from exc
+
+        data = response.json()
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(
+                "Unexpected structured summarization response payload"
+            ) from exc
+
+        if not isinstance(content, str):
+            raise RuntimeError("Structured summarization response content is not text")
+
+        return content
+
+    @staticmethod
+    def _render_visual_context(frame_contexts: Sequence[FrameContext]) -> str:
+        lines: list[str] = []
+        ordered_contexts = sorted(
+            frame_contexts,
+            key=lambda frame: (
+                frame.timestamp_start,
+                frame.timestamp_end,
+                str(frame.frame_path),
+            ),
+        )
+
+        for frame in ordered_contexts:
+            ocr_text = frame.ocr_text.strip()
+            if not ocr_text:
+                continue
+            start = format_timestamp(frame.timestamp_start).strip("[]")
+            end = format_timestamp(frame.timestamp_end).strip("[]")
+            lines.append(f"[{start}-{end}] {ocr_text}")
+
+        if not lines:
+            return "(no non-empty visual context)"
+        return "\n".join(lines)
 
 
 class TranscriptCorrector:
@@ -122,7 +244,9 @@ class TranscriptCorrector:
         language: str | None = None,
         max_tokens: int | None = None,
     ) -> str:
-        details = [context.strip() for context in (image_context or []) if context.strip()]
+        details = [
+            context.strip() for context in (image_context or []) if context.strip()
+        ]
 
         instructions = (
             "You refine noisy ASR transcripts using additional observations captured from video frames. "
@@ -168,14 +292,18 @@ class TranscriptCorrector:
                 timeout=self.timeout,
             )
             response.raise_for_status()
-        except requests.RequestException as exc:  # pragma: no cover - exercised via tests
+        except (
+            requests.RequestException
+        ) as exc:  # pragma: no cover - exercised via tests
             raise RuntimeError("Transcript correction request failed") from exc
 
         data = response.json()
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("Unexpected transcript correction response payload") from exc
+            raise RuntimeError(
+                "Unexpected transcript correction response payload"
+            ) from exc
 
         if not isinstance(content, str):
             raise RuntimeError("Transcript correction response content is not text")
