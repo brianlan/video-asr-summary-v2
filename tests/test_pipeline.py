@@ -1092,3 +1092,52 @@ def test_process_video_cli_prints_transcript_when_lark_publish_fails(
     captured = capsys.readouterr()
     assert "ASR transcript" in captured.out
     assert "lark network rejected request" in captured.out
+
+
+def test_process_video_cli_publishes_correction_failure_note(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script_path = (
+        Path(__file__).resolve().parent.parent / "scripts" / "process_video.py"
+    )
+    spec = importlib.util.spec_from_file_location("process_video_cli", script_path)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_text("video")
+
+    monkeypatch.setattr(
+        cli,
+        "process_video",
+        lambda *args, **kwargs: {
+            "transcript": "ASR transcript",
+            "corrected_transcript": None,
+            "transcript_correction_error": "backend down",
+            "summary": "# summary",
+        },
+    )
+
+    captured: dict[str, str] = {}
+
+    def fake_create_summary_document(*args, **kwargs):
+        captured["corrected_transcript"] = kwargs["corrected_transcript"]
+        return {"url": "https://example.com/doc"}
+
+    monkeypatch.setattr(cli, "create_summary_document", fake_create_summary_document)
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        [
+            "process_video",
+            str(video_file),
+            "--publish-to-lark",
+            "--enable-transcript-correction",
+        ],
+    )
+
+    cli.main()
+    _ = capsys.readouterr()
+
+    assert captured["corrected_transcript"] == "Correction failed: backend down"

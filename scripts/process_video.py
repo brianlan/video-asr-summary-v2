@@ -282,10 +282,19 @@ def main() -> None:
             doc_title = derive_lark_title(
                 summary_text, default_title_from_video(video_input)
             )
+            corrected_transcript = result.get("corrected_transcript")
+            correction_error = result.get("transcript_correction_error")
+            if (
+                args.enable_transcript_correction
+                and corrected_transcript is None
+                and correction_error
+            ):
+                corrected_transcript = f"Correction failed: {correction_error}"
             try:
                 lark_doc = create_summary_document(
                     summary_text,
                     title=doc_title,
+                    corrected_transcript=corrected_transcript,
                     folder_token=args.lark_folder_token,
                     app_id=args.lark_app_id,
                     app_secret=args.lark_app_secret,
