@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Any, Sequence
 
 import requests
@@ -15,6 +16,15 @@ except ImportError:  # pragma: no cover
     json_repair = None
 
 
+def _post_with_proxy_bypass(url: str, **kwargs: Any) -> requests.Response:
+    try:
+        return requests.post(url, proxies={}, **kwargs)
+    except TypeError as exc:
+        if "proxies" not in str(exc):
+            raise
+        return requests.post(url, **kwargs)
+
+
 class ChataiSummarizer:
     """Client for the chatai OpenAI-compatible summarization endpoint."""
 
@@ -25,6 +35,8 @@ class ChataiSummarizer:
         base_url: str = "https://api.chataiapi.com/v1",
         model: str = "gpt-5-mini",  # other available models: ["gpt-5-mini"]
         timeout: int = 120,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
     ) -> None:
         self.api_token = api_token or os.getenv("OPENAI_ACCESS_TOKEN")
         if not self.api_token:
@@ -33,6 +45,8 @@ class ChataiSummarizer:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
 
     def summarize(
         self,
@@ -74,18 +88,49 @@ class ChataiSummarizer:
             "Content-Type": "application/json",
         }
 
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except (
-            requests.RequestException
-        ) as exc:  # pragma: no cover - exercised via tests
-            raise RuntimeError("Summarization request failed") from exc
+        response: requests.Response | None = None
+        last_exception: Exception | None = None
+
+        for attempt in range(self.max_retries):
+            try:
+                response = _post_with_proxy_bypass(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                break
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_exception = exc
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * (2**attempt))
+                    continue
+                raise RuntimeError(
+                    f"Summarization request failed after {self.max_retries} retries"
+                ) from exc
+            except requests.HTTPError as exc:
+                last_exception = exc
+                status_code = (
+                    exc.response.status_code if exc.response is not None else None
+                )
+                if status_code is not None and 500 <= status_code < 600:
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.retry_delay * (2**attempt))
+                        continue
+                    raise RuntimeError(
+                        f"Summarization request failed after {self.max_retries} retries"
+                    ) from exc
+                raise RuntimeError("Summarization request failed") from exc
+            except (
+                requests.RequestException
+            ) as exc:  # pragma: no cover - exercised via tests
+                raise RuntimeError("Summarization request failed") from exc
+
+        if response is None:
+            raise RuntimeError(
+                f"Summarization request failed after {self.max_retries} retries"
+            ) from last_exception
 
         data = response.json()
         try:
@@ -107,6 +152,8 @@ class StructuredSummarizer:
         base_url: str = "https://api.chataiapi.com/v1",
         model: str = "gpt-5-mini",
         timeout: int = 120,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
     ) -> None:
         self.api_token = api_token or os.getenv("OPENAI_ACCESS_TOKEN")
         if not self.api_token:
@@ -115,6 +162,8 @@ class StructuredSummarizer:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
 
     def summarize(
         self,
@@ -166,18 +215,49 @@ class StructuredSummarizer:
             "Content-Type": "application/json",
         }
 
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except (
-            requests.RequestException
-        ) as exc:  # pragma: no cover - exercised via tests
-            raise RuntimeError("Structured summarization request failed") from exc
+        response: requests.Response | None = None
+        last_exception: Exception | None = None
+
+        for attempt in range(self.max_retries):
+            try:
+                response = _post_with_proxy_bypass(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                break
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_exception = exc
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * (2**attempt))
+                    continue
+                raise RuntimeError(
+                    f"Structured summarization request failed after {self.max_retries} retries"
+                ) from exc
+            except requests.HTTPError as exc:
+                last_exception = exc
+                status_code = (
+                    exc.response.status_code if exc.response is not None else None
+                )
+                if status_code is not None and 500 <= status_code < 600:
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.retry_delay * (2**attempt))
+                        continue
+                    raise RuntimeError(
+                        f"Structured summarization request failed after {self.max_retries} retries"
+                    ) from exc
+                raise RuntimeError("Structured summarization request failed") from exc
+            except (
+                requests.RequestException
+            ) as exc:  # pragma: no cover - exercised via tests
+                raise RuntimeError("Structured summarization request failed") from exc
+
+        if response is None:
+            raise RuntimeError(
+                f"Structured summarization request failed after {self.max_retries} retries"
+            ) from last_exception
 
         data = response.json()
         try:
@@ -227,6 +307,8 @@ class TranscriptCorrector:
         base_url: str = "https://api.chataiapi.com/v1",
         model: str = "gpt-5-mini",
         timeout: int = 120,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
     ) -> None:
         self.api_token = api_token or os.getenv("OPENAI_ACCESS_TOKEN")
         if not self.api_token:
@@ -235,6 +317,8 @@ class TranscriptCorrector:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
 
     def correct(
         self,
@@ -284,18 +368,49 @@ class TranscriptCorrector:
             "Content-Type": "application/json",
         }
 
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except (
-            requests.RequestException
-        ) as exc:  # pragma: no cover - exercised via tests
-            raise RuntimeError("Transcript correction request failed") from exc
+        response: requests.Response | None = None
+        last_exception: Exception | None = None
+
+        for attempt in range(self.max_retries):
+            try:
+                response = _post_with_proxy_bypass(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                break
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_exception = exc
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * (2**attempt))
+                    continue
+                raise RuntimeError(
+                    f"Transcript correction request failed after {self.max_retries} retries"
+                ) from exc
+            except requests.HTTPError as exc:
+                last_exception = exc
+                status_code = (
+                    exc.response.status_code if exc.response is not None else None
+                )
+                if status_code is not None and 500 <= status_code < 600:
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.retry_delay * (2**attempt))
+                        continue
+                    raise RuntimeError(
+                        f"Transcript correction request failed after {self.max_retries} retries"
+                    ) from exc
+                raise RuntimeError("Transcript correction request failed") from exc
+            except (
+                requests.RequestException
+            ) as exc:  # pragma: no cover - exercised via tests
+                raise RuntimeError("Transcript correction request failed") from exc
+
+        if response is None:
+            raise RuntimeError(
+                f"Transcript correction request failed after {self.max_retries} retries"
+            ) from last_exception
 
         data = response.json()
         try:
