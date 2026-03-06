@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from difflib import SequenceMatcher
 from typing import Any, Sequence
 
 import requests
@@ -16,6 +17,11 @@ except ImportError:  # pragma: no cover
     json_repair = None
 
 
+DEFAULT_OPENAI_COMPAT_BASE_URL = "https://api.chataiapi.com/v1"
+DEFAULT_OPENAI_COMPAT_MODEL = "gpt-5-mini"
+STRUCTURED_SUMMARIZER_DEFAULT_MAX_TOKENS = 4096
+
+
 def _post_with_proxy_bypass(url: str, **kwargs: Any) -> requests.Response:
     try:
         return requests.post(url, proxies={}, **kwargs)
@@ -25,15 +31,13 @@ def _post_with_proxy_bypass(url: str, **kwargs: Any) -> requests.Response:
         return requests.post(url, **kwargs)
 
 
-class ChataiSummarizer:
-    """Client for the chatai OpenAI-compatible summarization endpoint."""
-
+class OpenAICompatibleSummarizer:
     def __init__(
         self,
         *,
         api_token: str | None = None,
-        base_url: str = "https://api.chataiapi.com/v1",
-        model: str = "gpt-5-mini",  # other available models: ["gpt-5-mini"]
+        base_url: str | None = None,
+        model: str | None = None,
         timeout: int = 120,
         max_retries: int = 3,
         retry_delay: float = 1.0,
@@ -42,8 +46,14 @@ class ChataiSummarizer:
         if not self.api_token:
             raise RuntimeError("OPENAI_ACCESS_TOKEN is not set")
 
-        self.base_url = base_url.rstrip("/")
-        self.model = model
+        resolved_base_url = base_url or os.getenv(
+            "OPENAI_COMPAT_BASE_URL", DEFAULT_OPENAI_COMPAT_BASE_URL
+        )
+        resolved_model = model or os.getenv(
+            "OPENAI_COMPAT_MODEL", DEFAULT_OPENAI_COMPAT_MODEL
+        )
+        self.base_url = resolved_base_url.rstrip("/")
+        self.model = resolved_model
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
@@ -149,8 +159,8 @@ class StructuredSummarizer:
         self,
         *,
         api_token: str | None = None,
-        base_url: str = "https://api.chataiapi.com/v1",
-        model: str = "gpt-5-mini",
+        base_url: str | None = None,
+        model: str | None = None,
         timeout: int = 120,
         max_retries: int = 3,
         retry_delay: float = 1.0,
@@ -159,8 +169,14 @@ class StructuredSummarizer:
         if not self.api_token:
             raise RuntimeError("OPENAI_ACCESS_TOKEN is not set")
 
-        self.base_url = base_url.rstrip("/")
-        self.model = model
+        resolved_base_url = base_url or os.getenv(
+            "OPENAI_COMPAT_BASE_URL", DEFAULT_OPENAI_COMPAT_BASE_URL
+        )
+        resolved_model = model or os.getenv(
+            "OPENAI_COMPAT_MODEL", DEFAULT_OPENAI_COMPAT_MODEL
+        )
+        self.base_url = resolved_base_url.rstrip("/")
+        self.model = resolved_model
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
@@ -200,15 +216,118 @@ class StructuredSummarizer:
             f"{visual_context}"
         )
 
+        return self._request_content(
+            prompt_instructions,
+            user_content,
+            max_tokens=max_tokens,
+        )
+
+    def summarize_with_correction(
+        self,
+        transcript: str,
+        frame_contexts: Sequence[FrameContext],
+        *,
+        language: str | None = None,
+        instructions: str | None = None,
+        max_tokens: int | None = None,
+    ) -> dict[str, str]:
+        transcript_paragraphs = self._split_transcript_paragraphs(transcript)
+        paragraph_count = len(transcript_paragraphs)
+        paragraph_contract = (
+            "Paragraph Contract for corrected_transcript:\n"
+            f"  - The input transcript has {paragraph_count} paragraphs identified by markers [[P1]] through [[P{paragraph_count}]].\n"
+            f"  - corrected_transcript MUST contain every marker [[P1]] through [[P{paragraph_count}]] exactly once, in order.\n"
+            "  - The text for each paragraph must appear immediately after its marker.\n"
+            f"  - After removing markers, corrected_transcript must still map to exactly {paragraph_count} paragraphs separated by blank lines.\n"
+            '  - Example (2 paragraphs): "[[P1]]\\nFirst paragraph.\\n\\n[[P2]]\\nSecond paragraph."\n'
+        )
+        prompt_instructions = instructions or (
+            "Role: You are an expert editor and content analyst.\n\n"
+            "Task: I will provide two synchronized sources from one video: a raw transcript and "
+            "time-ordered visual context extracted from frames. Use both sources in one pass to "
+            "produce a coherent, faithful markdown article.\n\n"
+            "Key Requirements:\n"
+            "  - Improve clarity while preserving the speaker's intent, reasoning, examples, and important details.\n"
+            "  - Use visual context only to resolve ambiguity or strengthen factual accuracy; do not invent facts.\n"
+            "  - Keep structure clear with a title, sections, and concise paragraphs or bullets where helpful.\n"
+            "  - Include [MM:SS] timestamps in the final markdown for key statements so readers can trace claims to the video timeline.\n\n"
+            "Output Format:\n"
+            "  - Return only a JSON object with keys: summary, corrected_transcript.\n"
+            "  - summary must be markdown and begin with a single H1 heading as the article title.\n"
+            "  - corrected_transcript must correct factual errors only and preserve paragraph boundaries exactly.\n"
+            "  - Do not include conversational preamble or closing remarks.\n"
+        )
+        prompt_instructions += f"\n{paragraph_contract}"
+        if language:
+            prompt_instructions += f"Produce both fields in {language}."
+
+        visual_context = self._render_visual_context(frame_contexts)
+        marked_transcript = self._render_marked_transcript(transcript_paragraphs)
+        user_content = (
+            "=== TRANSCRIPT ===\n"
+            f"{marked_transcript}\n\n"
+            "=== VISUAL CONTEXT (Time-Ordered) ===\n"
+            f"{visual_context}"
+        )
+
+        content = self._request_content(
+            prompt_instructions,
+            user_content,
+            max_tokens=max_tokens,
+        )
+        parsed = self._extract_json_payload(content)
+        if parsed is None:
+            raise RuntimeError(
+                "Structured summarize-with-correction response payload is invalid JSON"
+            )
+
+        summary = parsed.get("summary")
+        corrected_transcript = parsed.get("corrected_transcript")
+        result: dict[str, str] = {
+            "summary": summary.strip() if isinstance(summary, str) else "",
+            "corrected_transcript": transcript.strip(),
+        }
+
+        if isinstance(corrected_transcript, str) and corrected_transcript.strip():
+            corrected_value = corrected_transcript.strip()
+            marker_parsed = self._parse_marked_corrected_transcript(
+                corrected_value,
+                expected_paragraph_count=paragraph_count,
+            )
+            if marker_parsed is not None:
+                corrected_value = marker_parsed
+            self._validate_correction_alignment(
+                transcript,
+                corrected_value,
+                summary=result["summary"],
+                corrected_transcript=corrected_value,
+            )
+            result["corrected_transcript"] = corrected_value
+            return result
+
+        result["error"] = "missing corrected_transcript in model response"
+        return result
+
+    def _request_content(
+        self,
+        system_prompt: str,
+        user_content: str,
+        *,
+        max_tokens: int | None,
+    ) -> str:
+        effective_max_tokens = (
+            max_tokens
+            if max_tokens is not None
+            else STRUCTURED_SUMMARIZER_DEFAULT_MAX_TOKENS
+        )
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": prompt_instructions},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            "max_tokens": effective_max_tokens,
         }
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
 
         headers = {
             "Authorization": f"Bearer {self.api_token}",
@@ -273,6 +392,105 @@ class StructuredSummarizer:
         return content
 
     @staticmethod
+    def _extract_json_payload(content: str) -> dict[str, Any] | None:
+        text = content.strip()
+        fenced = re.search(r"```(?:[a-zA-Z0-9_-]+)?\s*(.*?)```", text, flags=re.DOTALL)
+        candidates = [fenced.group(1).strip() if fenced else text]
+
+        structured = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if structured:
+            snippet = structured.group(0).strip()
+            if snippet and snippet not in candidates:
+                candidates.append(snippet)
+
+        for candidate in candidates:
+            payload = TranscriptCorrector._parse_candidate(candidate)
+            if payload is not None:
+                return payload
+        return None
+
+    @staticmethod
+    def _validate_correction_alignment(
+        original: str,
+        corrected: str,
+        *,
+        summary: str,
+        corrected_transcript: str,
+    ) -> None:
+        original_parts = StructuredSummarizer._split_transcript_paragraphs(original)
+        corrected_parts = StructuredSummarizer._split_transcript_paragraphs(corrected)
+
+        if len(original_parts) != len(corrected_parts):
+            raise TranscriptAlignmentError(
+                "Corrected transcript paragraph count does not match original transcript",
+                summary=summary,
+                corrected_transcript=corrected_transcript,
+            )
+
+        for index, (source_para, corrected_para) in enumerate(
+            zip(original_parts, corrected_parts),
+            start=1,
+        ):
+            ratio = SequenceMatcher(None, source_para, corrected_para).ratio()
+            if ratio < 0.6:
+                raise TranscriptAlignmentError(
+                    f"Corrected transcript paragraph {index} similarity ratio {ratio:.3f} is below 0.6",
+                    summary=summary,
+                    corrected_transcript=corrected_transcript,
+                )
+
+    @staticmethod
+    def _split_transcript_paragraphs(transcript: str) -> list[str]:
+        return [
+            paragraph.strip()
+            for paragraph in re.split(r"\n\s*\n", transcript.strip())
+            if paragraph.strip()
+        ]
+
+    @staticmethod
+    def _render_marked_transcript(paragraphs: Sequence[str]) -> str:
+        marked_paragraphs: list[str] = []
+        for index, paragraph in enumerate(paragraphs, start=1):
+            marked_paragraphs.append(f"[[P{index}]]\n{paragraph.strip()}")
+        return "\n\n".join(marked_paragraphs)
+
+    @staticmethod
+    def _parse_marked_corrected_transcript(
+        corrected_transcript: str,
+        *,
+        expected_paragraph_count: int,
+    ) -> str | None:
+        if expected_paragraph_count <= 0:
+            return None
+
+        marker_pattern = r"\[\[P(\d+)]]"
+        marker_matches = list(re.finditer(marker_pattern, corrected_transcript))
+
+        if len(marker_matches) != expected_paragraph_count:
+            return None
+        if corrected_transcript[: marker_matches[0].start()].strip():
+            return None
+
+        paragraphs: list[str] = []
+        for expected_index, marker in enumerate(marker_matches, start=1):
+            if int(marker.group(1)) != expected_index:
+                return None
+            body_start = marker.end()
+            body_end = (
+                marker_matches[expected_index].start()
+                if expected_index < len(marker_matches)
+                else len(corrected_transcript)
+            )
+            paragraph_body = corrected_transcript[body_start:body_end].strip()
+            if not paragraph_body:
+                return None
+            paragraphs.append(paragraph_body)
+
+        if len(paragraphs) != expected_paragraph_count:
+            return None
+        return "\n\n".join(paragraphs)
+
+    @staticmethod
     def _render_visual_context(frame_contexts: Sequence[FrameContext]) -> str:
         lines: list[str] = []
         ordered_contexts = sorted(
@@ -297,6 +515,15 @@ class StructuredSummarizer:
         return "\n".join(lines)
 
 
+class TranscriptAlignmentError(RuntimeError):
+    def __init__(
+        self, message: str, *, summary: str, corrected_transcript: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.summary = summary
+        self.corrected_transcript = corrected_transcript
+
+
 class TranscriptCorrector:
     """LLM client that refines transcripts using visual context."""
 
@@ -304,8 +531,8 @@ class TranscriptCorrector:
         self,
         *,
         api_token: str | None = None,
-        base_url: str = "https://api.chataiapi.com/v1",
-        model: str = "gpt-5-mini",
+        base_url: str | None = None,
+        model: str | None = None,
         timeout: int = 120,
         max_retries: int = 3,
         retry_delay: float = 1.0,
@@ -314,8 +541,14 @@ class TranscriptCorrector:
         if not self.api_token:
             raise RuntimeError("OPENAI_ACCESS_TOKEN is not set")
 
-        self.base_url = base_url.rstrip("/")
-        self.model = model
+        resolved_base_url = base_url or os.getenv(
+            "OPENAI_COMPAT_BASE_URL", DEFAULT_OPENAI_COMPAT_BASE_URL
+        )
+        resolved_model = model or os.getenv(
+            "OPENAI_COMPAT_MODEL", DEFAULT_OPENAI_COMPAT_MODEL
+        )
+        self.base_url = resolved_base_url.rstrip("/")
+        self.model = resolved_model
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
@@ -468,3 +701,7 @@ class TranscriptCorrector:
             except Exception:
                 return None
             return repaired if isinstance(repaired, dict) else None
+
+
+class ChataiSummarizer(OpenAICompatibleSummarizer):
+    pass

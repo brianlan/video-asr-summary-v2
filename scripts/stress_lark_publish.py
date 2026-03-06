@@ -46,7 +46,6 @@ def main():
             "scripts/process_video.py",
             args.video_url,
             "--publish-to-lark",
-            "--enable-transcript-correction",
             "--debug",
             "--image-context-frame-interval-seconds",
             "5",

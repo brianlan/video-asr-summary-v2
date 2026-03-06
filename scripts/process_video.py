@@ -2,7 +2,6 @@ import argparse
 import os
 import sys
 
-
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
@@ -108,13 +107,6 @@ def parse_args() -> argparse.Namespace:
         dest="enable_image_context",
         default=False,
         help="Enable using image context to correct the transcript",
-    )
-    parser.add_argument(
-        "--enable-transcript-correction",
-        action=argparse.BooleanOptionalAction,
-        dest="enable_transcript_correction",
-        default=False,
-        help="Enable LLM transcript correction using OCR frame context",
     )
     parser.add_argument(
         "--image-context-frame-interval-seconds",
@@ -228,7 +220,7 @@ def main() -> None:
         "base_url": args.ocr_url,
         "model": args.ocr_model,
     }
-    use_ocr = args.enable_image_context or args.enable_transcript_correction
+    use_ocr = args.enable_image_context
 
     video_input = args.video
     if is_url(video_input):
@@ -246,7 +238,6 @@ def main() -> None:
                 ocr_options=ocr_options if use_ocr else None,
                 summarizer_model=args.summarizer_model,
                 enable_image_context=args.enable_image_context,
-                enable_transcript_correction=args.enable_transcript_correction,
                 debug=args.debug,
             )
     else:
@@ -265,7 +256,6 @@ def main() -> None:
             ocr_options=ocr_options if use_ocr else None,
             summarizer_model=args.summarizer_model,
             enable_image_context=args.enable_image_context,
-            enable_transcript_correction=args.enable_transcript_correction,
             debug=args.debug,
         )
 
@@ -283,13 +273,6 @@ def main() -> None:
                 summary_text, default_title_from_video(video_input)
             )
             corrected_transcript = result.get("corrected_transcript")
-            correction_error = result.get("transcript_correction_error")
-            if (
-                args.enable_transcript_correction
-                and corrected_transcript is None
-                and correction_error
-            ):
-                corrected_transcript = f"Correction failed: {correction_error}"
             try:
                 lark_doc = create_summary_document(
                     summary_text,

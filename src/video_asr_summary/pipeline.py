@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
 from typing import Any, Optional
 
@@ -8,10 +9,9 @@ from .asr_client import LocalASRClient, LocalOCRClient
 from .audio import (
     extract_audio,
     extract_video_frames,
-    format_timestamp,
     split_audio_on_silence,
 )
-from .summarizer import StructuredSummarizer, TranscriptCorrector
+from .summarizer import StructuredSummarizer, TranscriptAlignmentError
 
 
 def process_video(
@@ -31,9 +31,6 @@ def process_video(
     frame_output_dir: Path | str | None = None,
     ocr_client: Optional[LocalOCRClient] = None,
     ocr_options: Optional[dict[str, Any]] = None,
-    transcript_corrector: Optional[TranscriptCorrector] = None,
-    transcript_corrector_model: str | None = None,
-    enable_transcript_correction: bool = False,
     cleanup: bool = False,
     debug: bool = False,
 ) -> dict[str, Any]:
@@ -70,7 +67,7 @@ def process_video(
 
     frame_contexts = []
 
-    if enable_image_context or enable_transcript_correction:
+    if enable_image_context:
         frame_contexts = _collect_frame_contexts(
             video=video,
             language=language,
@@ -82,25 +79,6 @@ def process_video(
         )
 
     corrected_transcript: str | None = None
-    transcript_correction_error: str | None = None
-    if enable_transcript_correction:
-        if transcript_corrector is not None:
-            corrector = transcript_corrector
-        else:
-            transcript_corrector_kwargs: dict[str, Any] = {}
-            if transcript_corrector_model is not None:
-                transcript_corrector_kwargs["model"] = transcript_corrector_model
-            corrector = TranscriptCorrector(**transcript_corrector_kwargs)
-        image_context = _build_transcript_correction_image_context(frame_contexts)
-        try:
-            corrected_transcript = corrector.correct(
-                transcript,
-                image_context=image_context,
-                language=language,
-            )
-        except Exception as exc:  # noqa: BLE001 - preserve transcript and summary on failure
-            corrected_transcript = None
-            transcript_correction_error = str(exc) or exc.__class__.__name__
 
     if summarizer is not None:
         llm = summarizer
@@ -111,16 +89,40 @@ def process_video(
         llm = StructuredSummarizer(**summarizer_kwargs)
     summary: str | None
     summarizer_error: str | None = None
+    transcript_correction_error: str | None = None
     try:
-        summarizer_frame_contexts = frame_contexts if enable_image_context else []
-        summary = llm.summarize(
-            transcript,
-            summarizer_frame_contexts,
-            language=language,
+        if enable_image_context:
+            summarize_result = llm.summarize_with_correction(
+                transcript,
+                frame_contexts,
+                language=language,
+            )
+            summary = summarize_result.get("summary")
+            corrected_transcript = summarize_result.get("corrected_transcript")
+            correction_error = summarize_result.get("error")
+            if correction_error is not None:
+                transcript_correction_error = str(correction_error)
+        else:
+            summary = llm.summarize(
+                transcript,
+                [],
+                language=language,
+            )
+    except TranscriptAlignmentError as exc:
+        print(
+            f"[warn] corrected transcript validation failed: {exc}",
+            file=sys.stderr,
         )
+        corrected_transcript = exc.corrected_transcript
+        summary = exc.summary
+        transcript_correction_error = str(exc) or exc.__class__.__name__
     except Exception as exc:  # noqa: BLE001 - we must preserve the transcript on any failure
-        summary = None
-        summarizer_error = str(exc) or exc.__class__.__name__
+        corrected_transcript = None
+        summary = getattr(exc, "summary", None)
+        if summary is None:
+            summarizer_error = str(exc) or exc.__class__.__name__
+        else:
+            transcript_correction_error = str(exc) or exc.__class__.__name__
 
     if cleanup:
         audio_path.unlink(missing_ok=True)
@@ -130,10 +132,10 @@ def process_video(
         "corrected_transcript": corrected_transcript,
         "summary": summary,
     }
-    if transcript_correction_error is not None:
-        result["transcript_correction_error"] = transcript_correction_error
     if summarizer_error is not None:
         result["summarizer_error"] = summarizer_error
+    if transcript_correction_error is not None:
+        result["transcript_correction_error"] = transcript_correction_error
 
     return result
 
@@ -187,23 +189,3 @@ def _collect_frame_contexts(
     finally:
         if frame_tempdir is not None:
             frame_tempdir.cleanup()
-
-
-def _build_transcript_correction_image_context(frame_contexts: list[Any]) -> list[str]:
-    lines: list[str] = []
-    ordered_contexts = sorted(
-        frame_contexts,
-        key=lambda frame: (
-            frame.timestamp_start,
-            frame.timestamp_end,
-            str(frame.frame_path),
-        ),
-    )
-    for frame in ordered_contexts:
-        ocr_text = frame.ocr_text.strip()
-        if not ocr_text:
-            continue
-        start = format_timestamp(frame.timestamp_start).strip("[]")
-        end = format_timestamp(frame.timestamp_end).strip("[]")
-        lines.append(f"[{start}-{end}] {ocr_text}")
-    return lines
