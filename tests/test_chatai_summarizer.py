@@ -182,7 +182,7 @@ def test_transcript_corrector_posts_transcript_and_context(
 
     assert result == "Clean text"
     payload = captured_payload["json"]
-    assert payload["model"] == "gpt-5-mini"
+    assert payload["model"] == "deepseek-reasoner"
     user_content = payload["messages"][1]["content"]
     assert "Raw tx" in user_content
     assert "Launch Day" in user_content

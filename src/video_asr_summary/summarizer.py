@@ -17,8 +17,8 @@ except ImportError:  # pragma: no cover
     json_repair = None
 
 
-DEFAULT_OPENAI_COMPAT_BASE_URL = "https://api.chataiapi.com/v1"
-DEFAULT_OPENAI_COMPAT_MODEL = "gpt-5-mini"
+DEFAULT_OPENAI_COMPAT_BASE_URL = "https://api.deepseek.com/v1"
+DEFAULT_OPENAI_COMPAT_MODEL = "deepseek-reasoner"
 STRUCTURED_SUMMARIZER_DEFAULT_MAX_TOKENS = 4096
 
 

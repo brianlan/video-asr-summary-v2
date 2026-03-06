@@ -129,7 +129,7 @@ def test_pipeline_allows_overriding_structured_summarizer_model(
     captured: dict[str, str] = {}
 
     class StubSummarizer:
-        def __init__(self, *, model: str = "gpt-5-mini") -> None:
+        def __init__(self, *, model: str = "deepseek-reasoner") -> None:
             captured["model"] = model
 
         def summarize(self, *_args, **_kwargs) -> str:

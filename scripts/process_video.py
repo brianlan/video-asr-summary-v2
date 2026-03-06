@@ -171,7 +171,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--summarizer-model",
         dest="summarizer_model",
-        default="gpt-5-mini",
+        default="deepseek-reasoner",
         help="Override the model used for summarization (defaults to SUMMARIZER_MODEL env var or SDK default)",
     )
     return parser.parse_args()
