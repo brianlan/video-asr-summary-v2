@@ -171,8 +171,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--summarizer-model",
         dest="summarizer_model",
-        default="deepseek-reasoner",
-        help="Override the model used for summarization (defaults to SUMMARIZER_MODEL env var or SDK default)",
+        default=os.getenv("OPENAI_COMPAT_MODEL", "deepseek-reasoner"),
+        help="Override the model used for summarization (defaults to OPENAI_COMPAT_MODEL env var or SDK default)",
     )
     return parser.parse_args()
 
@@ -211,6 +211,8 @@ def download_video(video_url: str, output_dir: Path) -> Path:
 def main() -> None:
     load_env_file(Path(".env"))
     args = parse_args()
+
+    print(f"[info] summarizer model: {args.summarizer_model}")
 
     asr_options = {
         "base_url": args.asr_url,

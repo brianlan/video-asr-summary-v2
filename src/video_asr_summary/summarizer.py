@@ -275,11 +275,35 @@ class StructuredSummarizer:
             user_content,
             max_tokens=max_tokens,
         )
+        if not content.strip():
+            fallback_summary = self.summarize(
+                transcript,
+                frame_contexts,
+                language=language,
+                max_tokens=max_tokens,
+            ).strip()
+            if not fallback_summary:
+                raise RuntimeError(
+                    "Structured summarize-with-correction returned empty content"
+                )
+            return {
+                "summary": fallback_summary,
+                "corrected_transcript": transcript.strip(),
+                "error": "model response was empty; used summary-only fallback",
+            }
+
         parsed = self._extract_json_payload(content)
         if parsed is None:
-            raise RuntimeError(
-                "Structured summarize-with-correction response payload is invalid JSON"
-            )
+            fallback_summary = content.strip()
+            if not fallback_summary:
+                raise RuntimeError(
+                    "Structured summarize-with-correction response payload is invalid JSON"
+                )
+            return {
+                "summary": fallback_summary,
+                "corrected_transcript": transcript.strip(),
+                "error": "model response was not valid JSON; using raw response as summary",
+            }
 
         summary = parsed.get("summary")
         corrected_transcript = parsed.get("corrected_transcript")
@@ -360,7 +384,9 @@ class StructuredSummarizer:
                 status_code = (
                     exc.response.status_code if exc.response is not None else None
                 )
-                if status_code is not None and 500 <= status_code < 600:
+                if status_code is not None and (
+                    status_code == 429 or 500 <= status_code < 600
+                ):
                     if attempt < self.max_retries - 1:
                         time.sleep(self.retry_delay * (2**attempt))
                         continue

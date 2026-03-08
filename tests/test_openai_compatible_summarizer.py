@@ -404,6 +404,70 @@ def test_structured_summarizer_summarize_with_correction_missing_corrected_trans
     assert result["error"] == "missing corrected_transcript in model response"
 
 
+def test_structured_summarizer_summarize_with_correction_non_json_falls_back_to_raw_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summarizer_module = import_module("video_asr_summary.summarizer")
+    StructuredSummarizer = summarizer_module.StructuredSummarizer
+
+    _setup_env(monkeypatch)
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": "# Markdown summary\n\n- point"}}]
+    }
+    mock_response.raise_for_status.return_value = None
+
+    monkeypatch.setattr(
+        "video_asr_summary.summarizer.requests.post",
+        lambda *args, **kwargs: mock_response,
+    )
+
+    summarizer = StructuredSummarizer()
+    result = summarizer.summarize_with_correction("source paragraph", [])
+
+    assert result["summary"] == "# Markdown summary\n\n- point"
+    assert result["corrected_transcript"] == "source paragraph"
+    assert (
+        result["error"]
+        == "model response was not valid JSON; using raw response as summary"
+    )
+
+
+def test_structured_summarizer_summarize_with_correction_empty_content_uses_summary_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    summarizer_module = import_module("video_asr_summary.summarizer")
+    StructuredSummarizer = summarizer_module.StructuredSummarizer
+
+    _setup_env(monkeypatch)
+
+    response_empty = MagicMock()
+    response_empty.json.return_value = {
+        "choices": [{"finish_reason": "length", "message": {"content": ""}}]
+    }
+    response_empty.raise_for_status.return_value = None
+
+    response_summary = MagicMock()
+    response_summary.json.return_value = {
+        "choices": [{"message": {"content": "# Fallback summary\n\n- done"}}]
+    }
+    response_summary.raise_for_status.return_value = None
+
+    queue = [response_empty, response_summary]
+    monkeypatch.setattr(
+        "video_asr_summary.summarizer.requests.post",
+        lambda *args, **kwargs: queue.pop(0),
+    )
+
+    summarizer = StructuredSummarizer()
+    result = summarizer.summarize_with_correction("source paragraph", [])
+
+    assert result["summary"] == "# Fallback summary\n\n- done"
+    assert result["corrected_transcript"] == "source paragraph"
+    assert result["error"] == "model response was empty; used summary-only fallback"
+
+
 def test_structured_summarizer_summarize_with_correction_alignment_mismatch_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
