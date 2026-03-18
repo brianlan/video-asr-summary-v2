@@ -212,7 +212,24 @@ def main() -> None:
     load_env_file(Path(".env"))
     args = parse_args()
 
-    print(f"[info] summarizer model: {args.summarizer_model}")
+    summarizer_base_url = os.getenv(
+        "OPENAI_COMPAT_BASE_URL", "https://api.deepseek.com/v1"
+    )
+    model_source = (
+        "--summarizer-model"
+        if "--summarizer-model" in sys.argv
+        else (
+            "OPENAI_COMPAT_MODEL" if "OPENAI_COMPAT_MODEL" in os.environ else "default"
+        )
+    )
+    base_url_source = (
+        "OPENAI_COMPAT_BASE_URL"
+        if "OPENAI_COMPAT_BASE_URL" in os.environ
+        else "default"
+    )
+
+    print(f"[info] summarizer model: {args.summarizer_model} ({model_source})")
+    print(f"[info] summarizer base-url: {summarizer_base_url} ({base_url_source})")
 
     asr_options = {
         "base_url": args.asr_url,
